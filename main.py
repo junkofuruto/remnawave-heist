@@ -9,6 +9,7 @@ from geoip import GeoIP, GeoIPError
 from logging_setup import configure_logging
 from remnawave_api import RemnawaveAPI
 from vless import fetch_subscription, link_to_outbound
+from xray_probe import XrayProbeError, check_outbound, require_xray
 
 logger = logging.getLogger("remnawave.main")
 
@@ -20,6 +21,11 @@ DRY_RUN = "--dry-run" in sys.argv
 def main():
     logger.info("Starting %s", "dry run" if DRY_RUN else "profile update")
     logger.info("Location filter: %s", config.location)
+    try:
+        require_xray(config.xray_binary)
+    except XrayProbeError as e:
+        logger.error("%s; profile not changed", e)
+        raise SystemExit(1) from None
     opener = download_opener(config.proxy)
     geoip = None
     if config.location == "europe":
@@ -54,13 +60,23 @@ def main():
             address = outbound["settings"]["vnext"][0]["address"]
             if geoip is not None and not geoip.is_european(address):
                 continue
+            logger.info("Checking candidate outbound through Xray")
+            try:
+                passed = check_outbound(outbound, config.probe_urls, config.probe_timeout, config.xray_binary)
+            except XrayProbeError as e:
+                logger.error("%s; profile not changed", e)
+                raise SystemExit(1) from None
+            if not passed:
+                logger.warning("Candidate outbound failed one or more of %d configured connectivity checks",
+                               len(config.probe_urls))
+                continue
             new_outbounds.append(outbound)
             if len(new_outbounds) == MAX_OUTBOUNDS:
                 break
         if len(new_outbounds) == MAX_OUTBOUNDS:
             break
     if not new_outbounds:
-        logger.error("No valid outbounds matched location filter '%s'; profile not changed", config.location)
+        logger.error("No outbounds passed location and connectivity checks; profile not changed")
         raise SystemExit(1)
     logger.info("Selected %d outbounds", len(new_outbounds))
 

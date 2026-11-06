@@ -26,6 +26,9 @@ class Config:
     geoip_ipv6_url: str = DEFAULT_GEOIP_IPV6_URL
     geoip_cache_dir: Path = BASE_DIR / ".geoip-cache"
     proxy: Optional[str] = field(default=None, repr=False)
+    probe_urls: List[str] = field(default_factory=lambda: ["https://telegram.org/", "https://www.instagram.com/"], repr=False)
+    probe_timeout: float = 10
+    xray_binary: str = "xray"
     ssl_ctx: Optional[ssl.SSLContext] = field(init=False, default=None, repr=False)
 
     def __post_init__(self):
@@ -95,6 +98,29 @@ def load_config(path: Path) -> Config:
     if not isinstance(location, str) or location not in ("europe", "all"):
         sys.exit("config value location must be 'europe' or 'all'")
 
+    probe_urls = data.get("probe_urls", ["https://telegram.org/", "https://www.instagram.com/"])
+    if not isinstance(probe_urls, list) or not probe_urls:
+        sys.exit("config value probe_urls must be a non-empty list of HTTPS URLs")
+    for probe_url in probe_urls:
+        try:
+            parsed_probe = urlsplit(probe_url) if isinstance(probe_url, str) else None
+            valid_probe = bool(parsed_probe and parsed_probe.scheme == "https" and parsed_probe.hostname
+                               and not parsed_probe.username and not parsed_probe.password
+                               and not parsed_probe.fragment and not any(ch.isspace() for ch in probe_url))
+            if valid_probe:
+                port = parsed_probe.port
+                valid_probe = port is None or 1 <= port <= 65535
+        except ValueError:
+            valid_probe = False
+        if not valid_probe:
+            sys.exit("config value probe_urls must contain only valid HTTPS URLs without credentials or fragments")
+    probe_timeout = data.get("probe_timeout", 10)
+    if isinstance(probe_timeout, bool) or not isinstance(probe_timeout, (int, float)) or not 0 < probe_timeout <= 120:
+        sys.exit("config value probe_timeout must be a number between 0 and 120 seconds")
+    xray_binary = data.get("xray_binary", "xray")
+    if not isinstance(xray_binary, str) or not xray_binary.strip() or "\0" in xray_binary:
+        sys.exit("config value xray_binary must be a non-empty executable name or path")
+
     return Config(
         url=data["url"],
         token=data["token"],
@@ -107,6 +133,9 @@ def load_config(path: Path) -> Config:
         geoip_ipv6_url=data.get("geoip_ipv6_url", DEFAULT_GEOIP_IPV6_URL),
         geoip_cache_dir=Path(data.get("geoip_cache_dir", BASE_DIR / ".geoip-cache")),
         proxy=proxy,
+        probe_urls=probe_urls,
+        probe_timeout=probe_timeout,
+        xray_binary=xray_binary,
     )
 
 

@@ -17,6 +17,15 @@ Optional JSON settings:
 - `cert`: CA certificate file for panel requests. If omitted, Python's default
   TLS certificate verification is used.
 - `backup_dir`: backup directory; defaults to `backups` beside the script.
+- `probe_urls`: non-empty list of HTTPS URLs to check through every candidate
+  outbound. Defaults to `https://telegram.org/` and `https://www.instagram.com/`.
+  Every URL must return HTTP 2xx; redirects, blocked responses, timeouts, TLS
+  errors, and other failures reject the candidate. Choose URLs that are stable
+  and suitable for your network.
+- `probe_timeout`: timeout in seconds for each probe request (default 10, maximum
+  120). Multiple candidates and URLs can make a run take several minutes.
+- `xray_binary`: Xray executable name or path (default `xray`). Xray must be
+  installed and accessible to the user running the updater.
 - `proxy`: optional HTTP or SOCKS5 proxy URL for subscription and GeoIP
   downloads, for example `"http://127.0.0.1:8080"`, `"socks5://127.0.0.1:1080"`,
   or `"socks5h://user:password@proxy.example:1080"`. `socks5` resolves download
@@ -62,6 +71,16 @@ continents may include locations outside Europe. GeoIP can be inaccurate or stal
 DNS answers may also change or differ where the panel runs. If a database cannot
 be loaded or no outbounds match, the profile is left unchanged. Filtering happens
 before the 20-outbound limit.
+
+Each location-matched candidate is checked before being added. A temporary Xray
+process receives the candidate configuration through an anonymous temporary file
+and exposes a randomly assigned, password-protected SOCKS inbound on loopback.
+Probe requests go through that inbound and the candidate, not the configured
+subscription-download proxy. All probe URLs must succeed. The Xray process is
+stopped after each candidate; if Xray cannot be started or no candidates pass,
+the panel profile is left unchanged. Dry runs perform these checks too. Probe
+URLs must be HTTPS and the local system's default trust store must trust their
+certificates.
 
 Explicit relative paths are interpreted relative to the current working
 directory. Run `python3 main.py --dry-run` to inspect proposed outbound changes

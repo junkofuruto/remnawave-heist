@@ -5,6 +5,9 @@
   "urls": ["https://example.com/subscription"],
   "location": "europe",
   "proxy": null,
+  "probe_urls": ["https://telegram.org/", "https://www.instagram.com/"],
+  "probe_timeout": 10,
+  "xray_binary": "xray",
   "geoip_ipv4_url": "https://raw.githubusercontent.com/sapics/ip-location-db/main/server-country/server-country-ipv4.csv",
   "geoip_ipv6_url": "https://raw.githubusercontent.com/sapics/ip-location-db/main/server-country/server-country-ipv6.csv"
 }
