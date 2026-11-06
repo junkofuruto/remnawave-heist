@@ -1,5 +1,8 @@
 backups/
 
 .env
+config.json
+.geoip-cache/
+__pycache__/
 
 *.pem

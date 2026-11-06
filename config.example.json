@@ -1,0 +1,10 @@
+{
+  "url": "https://panel.example.com",
+  "token": "your-panel-token",
+  "profile": "your-profile-uuid",
+  "urls": ["https://example.com/subscription"],
+  "location": "europe",
+  "proxy": null,
+  "geoip_ipv4_url": "https://raw.githubusercontent.com/sapics/ip-location-db/main/server-country/server-country-ipv4.csv",
+  "geoip_ipv6_url": "https://raw.githubusercontent.com/sapics/ip-location-db/main/server-country/server-country-ipv6.csv"
+}
