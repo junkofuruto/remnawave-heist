@@ -7,12 +7,16 @@ import urllib.parse
 import urllib.request
 
 
+class SocksProxyError(OSError):
+    pass
+
+
 def _receive_exact(sock, length):
     parts = bytearray()
     while len(parts) < length:
         chunk = sock.recv(length - len(parts))
         if not chunk:
-            raise OSError("SOCKS5 proxy closed the connection")
+            raise SocksProxyError("SOCKS5 proxy closed the connection")
         parts.extend(chunk)
     return bytes(parts)
 
@@ -22,17 +26,20 @@ def _socks5_connect(proxy, host, port, timeout, source_address=None):
     username = urllib.parse.unquote(parsed.username).encode("utf-8") if parsed.username is not None else None
     password = urllib.parse.unquote(parsed.password or "").encode("utf-8")
     if username is not None and (not 1 <= len(username) <= 255 or not 1 <= len(password) <= 255):
-        raise OSError("SOCKS5 username and password must each be 1-255 bytes")
+        raise SocksProxyError("SOCKS5 username and password must each be 1-255 bytes")
     sock = socket.create_connection((parsed.hostname, parsed.port), timeout, source_address)
     try:
         method = 2 if username is not None else 0
         sock.sendall(bytes((5, 1, method)))
-        if _receive_exact(sock, 2) != bytes((5, method)):
-            raise OSError("SOCKS5 proxy rejected authentication method")
+        selection = _receive_exact(sock, 2)
+        if selection[0] != 5:
+            raise SocksProxyError("proxy did not respond as SOCKS5; check the configured proxy scheme")
+        if selection[1] != method:
+            raise SocksProxyError("SOCKS5 proxy rejected the configured authentication method")
         if username is not None:
             sock.sendall(bytes((1, len(username))) + username + bytes((len(password),)) + password)
             if _receive_exact(sock, 2) != b"\x01\x00":
-                raise OSError("SOCKS5 proxy authentication failed")
+                raise SocksProxyError("SOCKS5 proxy authentication failed")
 
         try:
             address = ipaddress.ip_address(host)
@@ -40,20 +47,27 @@ def _socks5_connect(proxy, host, port, timeout, source_address=None):
             if parsed.scheme == "socks5h":
                 name = host.encode("idna")
                 if not 1 <= len(name) <= 255:
-                    raise OSError("invalid SOCKS5 destination hostname")
+                    raise SocksProxyError("invalid SOCKS5 destination hostname")
                 target = b"\x03" + bytes((len(name),)) + name
             else:
                 records = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
                 if not records:
-                    raise OSError("SOCKS5 destination could not be resolved")
+                    raise SocksProxyError("SOCKS5 destination could not be resolved")
                 address = ipaddress.ip_address(records[0][4][0])
                 target = bytes((1 if address.version == 4 else 4,)) + address.packed
         else:
             target = bytes((1 if address.version == 4 else 4,)) + address.packed
         sock.sendall(b"\x05\x01\x00" + target + struct.pack("!H", port))
         version, status, reserved, atyp = _receive_exact(sock, 4)
-        if version != 5 or status != 0 or reserved != 0:
-            raise OSError("SOCKS5 proxy connection failed")
+        if version != 5 or reserved != 0:
+            raise SocksProxyError("invalid SOCKS5 proxy response")
+        if status:
+            reasons = {
+                1: "general failure", 2: "connection forbidden", 3: "network unreachable",
+                4: "host unreachable", 5: "connection refused", 6: "connection timed out",
+                7: "command unsupported", 8: "address type unsupported",
+            }
+            raise SocksProxyError(f"SOCKS5 proxy connection failed: {reasons.get(status, 'unknown error')}")
         if atyp == 1:
             length = 4
         elif atyp == 4:
@@ -61,7 +75,7 @@ def _socks5_connect(proxy, host, port, timeout, source_address=None):
         elif atyp == 3:
             length = _receive_exact(sock, 1)[0]
         else:
-            raise OSError("invalid SOCKS5 proxy response")
+            raise SocksProxyError("invalid SOCKS5 proxy response")
         _receive_exact(sock, length + 2)
         return sock
     except BaseException:

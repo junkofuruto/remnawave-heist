@@ -44,6 +44,10 @@ When Europe filtering is enabled, both databases are downloaded automatically
 on first use and refreshed after 24 hours. Downloads are validated before the
 cached file is replaced. If a refresh fails, the last valid cached file is used
 with a warning; if no valid cache is available, the profile is left unchanged.
+Errors include a sanitized reason such as an HTTP status, DNS failure, proxy
+protocol error, or TLS failure. If a checker uses an HTTP proxy, configure the
+same HTTP proxy in this tool rather than a SOCKS URL; for SOCKS5 remote DNS,
+use `socks5h://`. The checker and this application can have different settings.
 An internet connection is required for the first download, but no Tor installation
 is needed. The source sees the requester's IP, but the server IPs being checked
 are never sent to it. If you previously configured `geoip_ipv4` or `geoip_ipv6`

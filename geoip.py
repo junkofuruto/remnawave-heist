@@ -1,9 +1,11 @@
 import bisect
+import errno
 import hashlib
 import ipaddress
 import logging
 import os
 import socket
+import ssl
 import tempfile
 import time
 import urllib.error
@@ -13,7 +15,7 @@ from http.client import HTTPException
 from array import array
 from pathlib import Path
 
-from downloads import download_opener
+from downloads import SocksProxyError, download_opener
 
 
 logger = logging.getLogger("remnawave.geoip")
@@ -31,6 +33,42 @@ EUROPE_COUNTRY_CODES = frozenset(
 
 class GeoIPError(Exception):
     pass
+
+
+def describe_geoip_error(error):
+    """Return an actionable reason without exposing URLs, credentials, or response bodies."""
+    if isinstance(error, urllib.error.HTTPError):
+        return f"HTTP {error.code}"
+    if isinstance(error, urllib.error.URLError):
+        return describe_geoip_error(error.reason) if isinstance(error.reason, BaseException) else "network or proxy error"
+    if isinstance(error, ssl.SSLCertVerificationError):
+        return "TLS certificate verification failed"
+    if isinstance(error, ssl.SSLError):
+        return "TLS handshake failed"
+    if isinstance(error, socket.gaierror):
+        return "DNS resolution failed; check proxy settings and try socks5h for proxy DNS"
+    if isinstance(error, TimeoutError):
+        return "connection timed out"
+    if isinstance(error, ConnectionRefusedError):
+        return "connection refused; check that the proxy is running and the port is correct"
+    if isinstance(error, ConnectionResetError):
+        return "connection reset by peer"
+    if isinstance(error, PermissionError):
+        return "permission denied accessing the GeoIP cache or network"
+    if isinstance(error, FileNotFoundError):
+        return "GeoIP cache path not found"
+    if isinstance(error, OSError) and error.errno in (errno.ENETUNREACH, errno.EHOSTUNREACH):
+        return "network or host unreachable"
+    if isinstance(error, SocksProxyError):
+        return str(error)
+    if isinstance(error, GeoIPError):
+        message = str(error)
+        safe_prefixes = ("invalid IPv", "incomplete IPv", "IPv4 GeoIP download", "IPv6 GeoIP download")
+        if message.startswith(safe_prefixes) and "\n" not in message and len(message) <= 160:
+            return message
+    if isinstance(error, HTTPException):
+        return "HTTP connection failed"
+    return "network, proxy, or cache error"
 
 
 class CountryDatabase:
@@ -131,12 +169,13 @@ def load_downloaded_database(url, version, cache_dir, opener=None):
         logger.info("Updated IPv%d GeoIP database", version)
         return database
     except (OSError, ValueError, GeoIPError, HTTPException) as e:
+        reason = describe_geoip_error(e)
         if isinstance(e, urllib.error.HTTPError):
             e.close()
         if cached is not None:
-            logger.warning("Could not refresh IPv%d GeoIP database; using cached copy", version)
+            logger.warning("Could not refresh IPv%d GeoIP database (%s); using cached copy", version, reason)
             return cached
-        raise GeoIPError(f"cannot download or load IPv{version} GeoIP database") from e
+        raise GeoIPError(f"cannot download or load IPv{version} GeoIP database: {reason}") from e
     finally:
         if temporary is not None:
             try:
