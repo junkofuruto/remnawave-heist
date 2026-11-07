@@ -21,9 +21,17 @@ Optional JSON settings:
   outbound. Defaults to `https://telegram.org/` and `https://www.instagram.com/`.
   Every URL must return HTTP 2xx; redirects, blocked responses, timeouts, TLS
   errors, and other failures reject the candidate. Choose URLs that are stable
-  and suitable for your network.
+  and suitable for your network. Each checked outbound produces one result line
+  containing its generated tag. Failures identify the first failed probe by
+  position and hostname (and port, if specified); URL paths and query parameters
+  are not logged. Later probes are not attempted for that candidate.
 - `probe_timeout`: timeout in seconds for each probe request (default 10, maximum
   120). Multiple candidates and URLs can make a run take several minutes.
+- `probe_concurrency`: maximum number of candidate outbounds checked in parallel
+  (default 4, range 1–32). Each active check starts its own Xray process; probe
+  URLs for an individual outbound remain sequential. Results retain subscription
+  order, though log lines appear as checks complete. The 20-outbound limit also
+  limits the number of simultaneous candidate checks.
 - `xray_binary`: Xray executable name or path (default `xray`). Xray must be
   installed and accessible to the user running the updater.
 - `proxy`: optional HTTP or SOCKS5 proxy URL for subscription and GeoIP
@@ -87,7 +95,8 @@ directory. Run `python3 main.py --dry-run` to inspect proposed outbound changes
 without updating the panel. The dry run still fetches the profile and creates a
 backup.
 
-Progress, warnings, and errors are logged to stderr with timestamps and levels.
+Progress, warnings, and errors are logged to stderr with abbreviated levels and
+millisecond timestamps, for example `[INF] 12:34:56.010 | message`.
 Terminal output uses color; set `NO_COLOR` to disable it. In dry-run mode, stdout
 contains the JSON preview of up to two proposed outbounds. Treat that preview as
 sensitive because it includes connection credentials. Configuration errors

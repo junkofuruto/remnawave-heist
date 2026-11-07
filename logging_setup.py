@@ -1,9 +1,17 @@
+import copy
 import logging
 import os
 import sys
 
 
 class PrettyFormatter(logging.Formatter):
+    LEVELS = {
+        logging.DEBUG: "DBG",
+        logging.INFO: "INF",
+        logging.WARNING: "WRN",
+        logging.ERROR: "ERR",
+        logging.CRITICAL: "CRT",
+    }
     COLORS = {
         logging.DEBUG: "\033[36m",
         logging.INFO: "\033[32m",
@@ -14,11 +22,13 @@ class PrettyFormatter(logging.Formatter):
     RESET = "\033[0m"
 
     def __init__(self, use_color=False):
-        super().__init__("%(asctime)s | %(levelname)-8s | %(message)s", datefmt="%H:%M:%S")
+        super().__init__("[%(shortlevel)s] %(asctime)s.%(msecs)03d | %(message)s", datefmt="%H:%M:%S")
         self.use_color = use_color
 
     def format(self, record):
-        message = super().format(record)
+        formatted_record = copy.copy(record)
+        formatted_record.shortlevel = self.LEVELS.get(record.levelno, record.levelname[:3].upper())
+        message = super().format(formatted_record)
         color = self.COLORS.get(record.levelno)
         return f"{color}{message}{self.RESET}" if self.use_color and color else message
 

@@ -1,6 +1,7 @@
 import http.client
 import json
 import logging
+import re
 import secrets
 import shutil
 import socket
@@ -16,6 +17,27 @@ from downloads import _socks5_connect
 
 logger = logging.getLogger("remnawave.probe")
 STARTUP_TIMEOUT = 5
+
+
+def _probe_label(url):
+    """Identify the probe without logging credentials, paths, or query parameters."""
+    parsed = urllib.parse.urlsplit(url)
+    host = parsed.hostname or "unknown"
+    if ":" in host:
+        host = f"[{host}]"
+    try:
+        port = parsed.port
+    except ValueError:
+        port = None
+    return f"{host}:{port}" if port is not None else host
+
+
+def _outbound_label(outbound):
+    """Use only the generated tag and avoid logging credentials or control characters."""
+    tag = outbound.get("tag")
+    if not isinstance(tag, str):
+        return "unknown"
+    return re.sub(r"[^A-Za-z0-9_.-]+", "-", tag)[:80] or "unknown"
 
 
 def _probe_url(proxy, url, timeout, context):
@@ -69,6 +91,7 @@ def check_outbound(outbound, urls, timeout=10, binary="xray"):
     """Return true only if all HTTPS URLs respond successfully through the outbound."""
     if not urls:
         raise XrayProbeError("at least one outbound probe URL is required")
+    description = _outbound_label(outbound)
     try:
         port = _available_port()
     except OSError as e:
@@ -93,7 +116,7 @@ def check_outbound(outbound, urls, timeout=10, binary="xray"):
         deadline = time.monotonic() + STARTUP_TIMEOUT
         while time.monotonic() < deadline:
             if process.poll() is not None:
-                logger.warning("Xray exited before the local probe inbound was ready")
+                logger.warning("Outbound %s: Xray exited before the probe inbound was ready", description)
                 return False
             try:
                 with socket.create_connection(("127.0.0.1", port), timeout=0.2):
@@ -101,10 +124,10 @@ def check_outbound(outbound, urls, timeout=10, binary="xray"):
             except OSError:
                 time.sleep(0.05)
         else:
-            logger.warning("Xray probe inbound did not start in time")
+            logger.warning("Outbound %s: Xray probe inbound did not start in time", description)
             return False
         if process.poll() is not None:
-            logger.warning("Xray exited before probing")
+            logger.warning("Outbound %s: Xray exited before probing", description)
             return False
         proxy = f"socks5h://{username}:{password}@127.0.0.1:{port}"
         try:
@@ -112,17 +135,19 @@ def check_outbound(outbound, urls, timeout=10, binary="xray"):
         except OSError as e:
             raise XrayProbeError("cannot initialize TLS for outbound probes") from e
         for index, url in enumerate(urls, 1):
+            label = _probe_label(url)
             try:
                 status = _probe_url(proxy, url, timeout, context)
                 if not 200 <= status < 300:
-                    logger.warning("Outbound probe %d returned HTTP %d", index, status)
+                    logger.warning("Outbound %s: probe %d (%s) returned HTTP %d", description, index, label, status)
                     return False
             except (OSError, ValueError, HTTPException):
-                logger.warning("Outbound probe %d failed", index)
+                logger.warning("Outbound %s: probe %d (%s) failed", description, index, label)
                 return False
             if process.poll() is not None:
-                logger.warning("Xray exited during outbound probing")
+                logger.warning("Outbound %s: Xray exited during probe %d (%s)", description, index, label)
                 return False
+        logger.info("Outbound %s: passed %d probe(s)", description, len(urls))
         return True
     finally:
         _stop(process)

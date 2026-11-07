@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
 import json, logging, os, re, secrets, sys, urllib.parse
+from collections import deque
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
 from downloads import download_opener
@@ -17,6 +19,69 @@ TAG_PREFIX = "out-auto-"
 FIXED_TAGS = ("direct", "block")
 MAX_OUTBOUNDS = 20
 DRY_RUN = "--dry-run" in sys.argv
+
+def select_outbounds(opener, geoip, run_id):
+    seen = set()
+    selected = []
+    pending = deque()
+    candidate_number = 0
+
+    def collect_one():
+        outbound, future = pending.popleft()
+        try:
+            passed = future.result()
+        except XrayProbeError as e:
+            logger.error("Outbound %s: %s; profile not changed", outbound["tag"], e)
+            raise SystemExit(1) from None
+        if passed and len(selected) < MAX_OUTBOUNDS:
+            selected.append(outbound)
+
+    def drain_pending():
+        while pending:
+            collect_one()
+
+    with ThreadPoolExecutor(max_workers=config.probe_concurrency) as pool:
+        try:
+            for index, url in enumerate(config.urls, 1):
+                logger.info("Reading subscription %d/%d", index, len(config.urls))
+                try:
+                    links = fetch_subscription(url, opener)
+                except (OSError, ValueError):
+                    logger.error("Failed to read subscription %d", index)
+                    raise SystemExit(1) from None
+                for link in links:
+                    if link in seen:
+                        continue
+                    seen.add(link)
+                    try:
+                        name = urllib.parse.unquote(urllib.parse.urlsplit(link).fragment) or "node"
+                        slug = re.sub(r"[^A-Za-z0-9]+", "-", name).strip("-")[:20] or "node"
+                        tag = f"{TAG_PREFIX}{run_id}-{candidate_number + 1:02d}-{slug}"
+                        outbound = link_to_outbound(link, tag)
+                    except Exception:
+                        logger.warning("Skipping invalid VLESS link")
+                        continue
+                    address = outbound["settings"]["vnext"][0]["address"]
+                    if geoip is not None and not geoip.is_european(address):
+                        continue
+                    candidate_number += 1
+                    future = pool.submit(check_outbound, outbound, config.probe_urls,
+                                         config.probe_timeout, config.xray_binary)
+                    pending.append((outbound, future))
+                    if len(pending) >= config.probe_concurrency:
+                        collect_one()
+                    while pending and len(selected) + len(pending) >= MAX_OUTBOUNDS:
+                        collect_one()
+                    if len(selected) == MAX_OUTBOUNDS:
+                        break
+                if len(selected) == MAX_OUTBOUNDS:
+                    break
+            drain_pending()
+            return selected
+        finally:
+            for _, future in pending:
+                future.cancel()
+
 
 def main():
     logger.info("Starting %s", "dry run" if DRY_RUN else "profile update")
@@ -35,46 +100,9 @@ def main():
         except GeoIPError as e:
             logger.error("%s; profile not changed", e)
             raise SystemExit(1) from None
-    seen = set()
+    logger.info("Checking candidates with up to %d concurrent Xray processes", config.probe_concurrency)
     run_id = secrets.token_hex(4)
-    new_outbounds = []
-    for index, url in enumerate(config.urls, 1):
-        logger.info("Reading subscription %d/%d", index, len(config.urls))
-        try:
-            subscription_links = fetch_subscription(url, opener)
-        except (OSError, ValueError):
-            logger.error("Failed to read subscription %d", index)
-            raise SystemExit(1) from None
-        for link in subscription_links:
-            if link in seen:
-                continue
-            seen.add(link)
-            try:
-                name = urllib.parse.unquote(urllib.parse.urlsplit(link).fragment) or "node"
-                slug = re.sub(r"[^A-Za-z0-9]+", "-", name).strip("-")[:20] or "node"
-                tag = f"{TAG_PREFIX}{run_id}-{len(new_outbounds) + 1:02d}-{slug}"
-                outbound = link_to_outbound(link, tag)
-            except Exception:
-                logger.warning("Skipping invalid VLESS link")
-                continue
-            address = outbound["settings"]["vnext"][0]["address"]
-            if geoip is not None and not geoip.is_european(address):
-                continue
-            logger.info("Checking candidate outbound through Xray")
-            try:
-                passed = check_outbound(outbound, config.probe_urls, config.probe_timeout, config.xray_binary)
-            except XrayProbeError as e:
-                logger.error("%s; profile not changed", e)
-                raise SystemExit(1) from None
-            if not passed:
-                logger.warning("Candidate outbound failed one or more of %d configured connectivity checks",
-                               len(config.probe_urls))
-                continue
-            new_outbounds.append(outbound)
-            if len(new_outbounds) == MAX_OUTBOUNDS:
-                break
-        if len(new_outbounds) == MAX_OUTBOUNDS:
-            break
+    new_outbounds = select_outbounds(opener, geoip, run_id)
     if not new_outbounds:
         logger.error("No outbounds passed location and connectivity checks; profile not changed")
         raise SystemExit(1)

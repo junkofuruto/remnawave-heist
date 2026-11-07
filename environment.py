@@ -28,6 +28,7 @@ class Config:
     proxy: Optional[str] = field(default=None, repr=False)
     probe_urls: List[str] = field(default_factory=lambda: ["https://telegram.org/", "https://www.instagram.com/"], repr=False)
     probe_timeout: float = 10
+    probe_concurrency: int = 4
     xray_binary: str = "xray"
     ssl_ctx: Optional[ssl.SSLContext] = field(init=False, default=None, repr=False)
 
@@ -117,6 +118,9 @@ def load_config(path: Path) -> Config:
     probe_timeout = data.get("probe_timeout", 10)
     if isinstance(probe_timeout, bool) or not isinstance(probe_timeout, (int, float)) or not 0 < probe_timeout <= 120:
         sys.exit("config value probe_timeout must be a number between 0 and 120 seconds")
+    probe_concurrency = data.get("probe_concurrency", 4)
+    if isinstance(probe_concurrency, bool) or not isinstance(probe_concurrency, int) or not 1 <= probe_concurrency <= 32:
+        sys.exit("config value probe_concurrency must be an integer between 1 and 32")
     xray_binary = data.get("xray_binary", "xray")
     if not isinstance(xray_binary, str) or not xray_binary.strip() or "\0" in xray_binary:
         sys.exit("config value xray_binary must be a non-empty executable name or path")
@@ -135,6 +139,7 @@ def load_config(path: Path) -> Config:
         proxy=proxy,
         probe_urls=probe_urls,
         probe_timeout=probe_timeout,
+        probe_concurrency=probe_concurrency,
         xray_binary=xray_binary,
     )
 
