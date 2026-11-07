@@ -22,9 +22,10 @@ Optional JSON settings:
   Every URL must return HTTP 2xx; redirects, blocked responses, timeouts, TLS
   errors, and other failures reject the candidate. Choose URLs that are stable
   and suitable for your network. Each checked outbound produces one result line
-  containing its generated tag. Failures identify the first failed probe by
-  position and hostname (and port, if specified); URL paths and query parameters
-  are not logged. Later probes are not attempted for that candidate.
+  containing its generated tag and successful probes. Failures also identify the
+  first failed probe by position and hostname (and port, if specified); URL paths
+  and query parameters are not logged. Later probes are not attempted for that
+  candidate.
 - `probe_timeout`: timeout in seconds for each probe request (default 10, maximum
   120). Multiple candidates and URLs can make a run take several minutes.
 - `probe_concurrency`: maximum number of candidate outbounds checked in parallel

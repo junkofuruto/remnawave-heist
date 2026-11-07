@@ -134,20 +134,25 @@ def check_outbound(outbound, urls, timeout=10, binary="xray"):
             context = ssl.create_default_context()
         except OSError as e:
             raise XrayProbeError("cannot initialize TLS for outbound probes") from e
+        passed_probes = []
         for index, url in enumerate(urls, 1):
             label = _probe_label(url)
             try:
                 status = _probe_url(proxy, url, timeout, context)
                 if not 200 <= status < 300:
-                    logger.warning("Outbound %s: probe %d (%s) returned HTTP %d", description, index, label, status)
+                    logger.warning("Outbound %s: probe %d (%s) returned HTTP %d; passed: %s",
+                                   description, index, label, status, ", ".join(passed_probes) or "none")
                     return False
             except (OSError, ValueError, HTTPException):
-                logger.warning("Outbound %s: probe %d (%s) failed", description, index, label)
+                logger.warning("Outbound %s: probe %d (%s) failed; passed: %s",
+                               description, index, label, ", ".join(passed_probes) or "none")
                 return False
             if process.poll() is not None:
-                logger.warning("Outbound %s: Xray exited during probe %d (%s)", description, index, label)
+                logger.warning("Outbound %s: Xray exited during probe %d (%s); passed: %s",
+                               description, index, label, ", ".join(passed_probes) or "none")
                 return False
-        logger.info("Outbound %s: passed %d probe(s)", description, len(urls))
+            passed_probes.append(f"{index} ({label}, HTTP {status})")
+        logger.info("Outbound %s: passed probes: %s", description, ", ".join(passed_probes))
         return True
     finally:
         _stop(process)
