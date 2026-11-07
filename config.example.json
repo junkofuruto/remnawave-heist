@@ -5,7 +5,11 @@
   "urls": ["https://example.com/subscription"],
   "location": "europe",
   "proxy": null,
-  "probe_urls": ["https://telegram.org/", "https://www.instagram.com/"],
+  "probe_urls": [
+    "200-299 https://telegram.org/",
+    "200-299 https://www.instagram.com/",
+    "200-299|400-499 https://rr2---sn-ovgq0oxu-j2ie.googlevideo.com/videoplayback"
+  ],
   "probe_timeout": 10,
   "probe_concurrency": 4,
   "xray_binary": "xray",

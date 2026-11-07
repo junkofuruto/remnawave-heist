@@ -17,15 +17,20 @@ Optional JSON settings:
 - `cert`: CA certificate file for panel requests. If omitted, Python's default
   TLS certificate verification is used.
 - `backup_dir`: backup directory; defaults to `backups` beside the script.
-- `probe_urls`: non-empty list of HTTPS URLs to check through every candidate
-  outbound. Defaults to `https://telegram.org/` and `https://www.instagram.com/`.
-  Every URL must return HTTP 2xx; redirects, blocked responses, timeouts, TLS
-  errors, and other failures reject the candidate. Choose URLs that are stable
-  and suitable for your network. Each checked outbound produces one result line
-  containing its generated tag and successful probes. Failures also identify the
-  first failed probe by position and hostname (and port, if specified); URL paths
-  and query parameters are not logged. Later probes are not attempted for that
-  candidate.
+- `probe_urls`: non-empty list of HTTPS probes checked through every candidate.
+  Entries use `"ranges URL"`, for example
+  `"200-299|400-499 https://example.com/path"`. Ranges are inclusive,
+  three-digit HTTP status codes from 100 to 599; separate multiple ranges with
+  `|`. A plain HTTPS URL is also accepted and defaults to `200-299`. Defaults
+  are `https://telegram.org/` and `https://www.instagram.com/`.
+  Every probe must return a status in its allowed ranges; other statuses,
+  timeouts, TLS errors, and other failures reject the candidate. Redirects are
+  not followed; permit `300-399` explicitly if those responses are acceptable.
+  Choose URLs that are stable and suitable for your network. Each checked
+  outbound produces one result line containing its generated tag and successful
+  probes. Failures also identify the first failed probe by position and hostname
+  (and port, if specified); URL paths and query parameters are not logged. Later
+  probes are not attempted for that candidate.
 - `probe_timeout`: timeout in seconds for each probe request (default 10, maximum
   120). Multiple candidates and URLs can make a run take several minutes.
 - `probe_concurrency`: maximum number of candidate outbounds checked in parallel

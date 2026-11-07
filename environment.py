@@ -8,6 +8,7 @@ from typing import List, Optional
 from urllib.parse import unquote, urlsplit
 
 from geoip import DEFAULT_GEOIP_IPV4_URL, DEFAULT_GEOIP_IPV6_URL
+from xray_probe import parse_probe_entry
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = Path(os.environ.get("REMNAWAVE_CONFIG_FILE", BASE_DIR / "config.json"))
@@ -26,7 +27,7 @@ class Config:
     geoip_ipv6_url: str = DEFAULT_GEOIP_IPV6_URL
     geoip_cache_dir: Path = BASE_DIR / ".geoip-cache"
     proxy: Optional[str] = field(default=None, repr=False)
-    probe_urls: List[str] = field(default_factory=lambda: ["https://telegram.org/", "https://www.instagram.com/"], repr=False)
+    probe_urls: List[str] = field(default_factory=lambda: ["200-299 https://telegram.org/", "200-299 https://www.instagram.com/"], repr=False)
     probe_timeout: float = 10
     probe_concurrency: int = 4
     xray_binary: str = "xray"
@@ -99,22 +100,14 @@ def load_config(path: Path) -> Config:
     if not isinstance(location, str) or location not in ("europe", "all"):
         sys.exit("config value location must be 'europe' or 'all'")
 
-    probe_urls = data.get("probe_urls", ["https://telegram.org/", "https://www.instagram.com/"])
+    probe_urls = data.get("probe_urls", ["200-299 https://telegram.org/", "200-299 https://www.instagram.com/"])
     if not isinstance(probe_urls, list) or not probe_urls:
-        sys.exit("config value probe_urls must be a non-empty list of HTTPS URLs")
-    for probe_url in probe_urls:
+        sys.exit("config value probe_urls must be a non-empty list of probe entries")
+    for index, probe_entry in enumerate(probe_urls, 1):
         try:
-            parsed_probe = urlsplit(probe_url) if isinstance(probe_url, str) else None
-            valid_probe = bool(parsed_probe and parsed_probe.scheme == "https" and parsed_probe.hostname
-                               and not parsed_probe.username and not parsed_probe.password
-                               and not parsed_probe.fragment and not any(ch.isspace() for ch in probe_url))
-            if valid_probe:
-                port = parsed_probe.port
-                valid_probe = port is None or 1 <= port <= 65535
-        except ValueError:
-            valid_probe = False
-        if not valid_probe:
-            sys.exit("config value probe_urls must contain only valid HTTPS URLs without credentials or fragments")
+            parse_probe_entry(probe_entry)
+        except ValueError as e:
+            sys.exit(f"config value probe_urls entry {index}: {e}")
     probe_timeout = data.get("probe_timeout", 10)
     if isinstance(probe_timeout, bool) or not isinstance(probe_timeout, (int, float)) or not 0 < probe_timeout <= 120:
         sys.exit("config value probe_timeout must be a number between 0 and 120 seconds")
