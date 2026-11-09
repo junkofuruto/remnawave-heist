@@ -1,7 +1,10 @@
 backups/
+logs/
 
 .env
 config.json
+state.json
+state.json.lock
 .geoip-cache/
 __pycache__/
 

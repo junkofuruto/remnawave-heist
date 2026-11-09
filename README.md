@@ -3,9 +3,8 @@
 Copy `config.example.json` to `config.json`, restrict access to that file, and
 fill in the panel `url`, API `token`, `profile` UUID, and the list of
 subscription `urls`. The configuration file contains credentials and is ignored
-by Git. Links from the subscriptions are combined and deduplicated. Passing
-outbounds are ranked by measured speed and latency before the configured limit
-is applied.
+by Git. A persistent pool tracks normalized outbound hashes, subscription
+membership, connectivity, latency, and optional speed measurements.
 
 Configuration is loaded from `config.json` beside `environment.py`, regardless
 of the current working directory. Set `REMNAWAVE_CONFIG_FILE` to select a
@@ -18,6 +17,12 @@ Optional JSON settings:
 - `cert`: CA certificate file for panel requests. If omitted, Python's default
   TLS certificate verification is used.
 - `backup_dir`: backup directory; defaults to `backups` beside the script.
+- `log_file`: path to the rotating log file, defaulting to
+  `logs/remnawave.log` beside the script. Explicit relative paths use the current
+  working directory. Files are restricted to the current user and rotate at
+  5 MiB with three backups; keep custom log paths out of version control. File
+  logging is intended for one updater process at a time; concurrent runs must use
+  separate log files.
 - `probe_urls`: non-empty list of HTTPS probes checked through every candidate.
   Entries use `"ranges URL"`, for example
   `"200-299|400-499 https://example.com/path"`. Ranges are inclusive,
@@ -32,15 +37,23 @@ Optional JSON settings:
   probes. Failures identify all failed probes by position and hostname (and port,
   if specified); URL paths and query parameters are not logged. All configured
   status probes are attempted unless the Xray process exits.
+- `probe_attempts`: total connectivity attempts per outbound, including the
+  first attempt (default 3, range 1–10). A candidate is considered unavailable
+  only after all attempts fail; Xray setup errors abort the run.
+- `state_file`: persistent state path, default `state.json` beside the script.
+  It contains full outbound connection details and credentials; it is created
+  with mode `0600`. Keep custom state paths and their `.lock` files private and
+  out of version control. If the state file is lost while the panel still has
+  managed outbounds, bootstrap requires a successful subscription refresh and
+  probes; back up this file securely.
 - `probe_timeout`: timeout in seconds for each probe request (default 10, maximum
   120). Multiple candidates and URLs can make a run take several minutes.
 - `probe_concurrency`: maximum number of candidate outbounds checked in parallel
   (default 4, range 1–32). Each active check starts its own Xray process; probe
-  URLs for an individual outbound remain sequential. All location-matched
-  candidates are checked and, if they pass, measured for latency. Speed tests
-  run first on the initially selected candidates, then on the remaining passing
-  candidates; logs appear in completion order. Tests can consume significant
-  bandwidth and time.
+  URLs for an individual outbound remain sequential. Saved configurations are
+  checked first, then newly discovered configurations. Speed checks are performed
+  for newly discovered passing configurations; logs appear in completion order. Checks can
+  consume significant bandwidth and time.
 - `max_outbounds`: maximum number of best passing candidates to add to the
   profile (default 20, range 1–1000).
 - `speed_test_url`: HTTPS URL serving at least `speed_test_bytes` bytes, default
@@ -103,43 +116,54 @@ Each location-matched candidate is checked before being added. A temporary Xray
 process receives the candidate configuration through an anonymous temporary file
 and exposes a randomly assigned, password-protected SOCKS inbound on loopback.
 Probe requests go through that inbound and the candidate, not the configured
-subscription-download proxy. Only candidates passing every status probe receive
-separate latency checks. After those checks, the lowest-latency candidates are
-immediately published as a temporary selection, then speed-tested first. The
-remaining probe-passing candidates are speed-tested afterward; a faster candidate
-replaces the slowest selected candidate, with latency breaking exact speed ties.
-Failed speed checks are excluded from the final selection. After the initial
-speed tests, the profile can temporarily contain fewer than `max_outbounds` if
-some of those tests fail; later passing candidates fill vacancies.
+subscription-download proxy. Each run has two routines. First, all saved active
+and reserve outbounds are rechecked with the configured retry count, and failed
+active entries are replaced from the healthy saved pool when possible. Second,
+subscriptions are refreshed and newly discovered configurations are checked. A
+saved configuration that is absent from all successfully refreshed sources is
+removed and replaced if a healthy candidate is available. Any failed, empty, or
+invalid subscription aborts the refresh without treating it as a deletion; a
+completed first-routine health update may already have been applied.
+
+Configuration identity is SHA-256 of canonical outbound JSON excluding its tag;
+subscription identities are hashes of their URLs. The state stores full outbound
+credentials, measurements, last-check timestamps, and source membership. Saved
+entries that fail all attempts are retained as unhealthy with their last
+successful latency and checked again on a later run. Healthy active entries
+remain selected; vacancies are filled by saved speed (when available), then
+latency. New passing configurations are eligible as
+soon as discovered. If no healthy replacement exists, the current panel profile
+is left unchanged, even if it contains an unhealthy or removed outbound.
 
 Latency is the average time from starting the SOCKS connection to receiving HTTP
-headers across a second set of requests to the status probe URLs. Download speed
+headers across the status probe requests; the same requests check connectivity,
+so no second latency round is needed. Download speed
 is measured in Mbps over the whole speed request, including connection setup and
 time to first byte. The final report lists selected outbounds and their source
-subscription number. Duplicate links are attributed to their first subscription.
-Measurements are approximate and concurrent tests share available bandwidth.
+subscription numbers. Duplicate configurations track all source subscriptions.
+Measurements are approximate and concurrent tests share available bandwidth;
+speed-check failure does not make an otherwise healthy outbound ineligible.
 
-The original profile is backed up before the first panel update. If Xray cannot
-start or no candidate passes the status and latency checks, no panel update is
-made. If the process is interrupted, an update fails, or no speed check passes,
-the last successful selection may remain active; restore the saved backup manually
-if needed. Before each update, the current panel outbounds are re-read and
-compared with the last observed selection; changes made by someone else stop the
-run. Non-outbound fields are refreshed, but because the API update is not atomic,
-concurrent edits between the read and write can still be overwritten. Avoid
-editing the profile while this script is running. Dry runs perform all checks
-and simulate publications, but never update the panel. Probe URLs must be HTTPS
-and their certificates trusted by the local system. Linux `/proc` access is needed
-to verify that each temporary listening port belongs to the Xray process.
+Every panel update is preceded by a private backup and a persistent pending-update
+record. On restart, an interrupted update is reconciled against the panel; if
+the result does not match either expected state, the script stops for manual
+reconciliation. A file lock prevents concurrent non-dry-run updaters using the
+same state file. Before each update, current panel outbounds are re-read and
+compared with the last observed profile; external changes stop the run. Other
+fields are refreshed, but the API update is not atomic, so edits between read and
+write can still be overwritten. Avoid editing the profile while this script runs.
+Dry runs check the current state but do not modify state or panel. Probe URLs must
+be HTTPS and their certificates trusted by the local system. Linux `/proc` access
+is needed to verify each temporary listening port belongs to its Xray process.
 
 Explicit relative paths are interpreted relative to the current working
 directory. Run `python3 main.py --dry-run` to inspect proposed outbound changes
-without updating the panel. The dry run still fetches the profile and creates a
-backup.
+without updating the panel or persistent state.
 
-Progress, warnings, and errors are logged to stderr with abbreviated levels and
-millisecond timestamps, for example `[INF] 12:34:56.010 | message`.
-Terminal output uses color; set `NO_COLOR` to disable it. In dry-run mode, stdout
-contains the JSON preview of up to two proposed outbounds. Treat that preview as
-sensitive because it includes connection credentials. Configuration errors
-reported before startup logging is initialized remain plain stderr messages.
+Progress, warnings, and errors are logged to stderr and the configured rotating
+file with abbreviated levels and millisecond timestamps, for example
+`[INF] 12:34:56.010 | message`. Terminal level badges have background colors;
+set `NO_COLOR` to disable them. Files and redirected output contain no ANSI colors.
+Startup configuration errors occur before the file logger is initialized.
+In dry-run mode, stdout contains the JSON preview of up to two proposed
+outbounds. Treat that preview as sensitive because it includes connection credentials.

@@ -252,7 +252,7 @@ def _xray_session(outbound, binary):
 
 
 def check_outbound(outbound, urls, timeout=10, binary="xray"):
-    """Check connectivity, then measure latency only for passing candidates."""
+    """Check connectivity and retain latency only for passing candidates."""
     if not urls:
         raise XrayProbeError("at least one outbound probe URL is required")
     try:
@@ -264,11 +264,11 @@ def check_outbound(outbound, urls, timeout=10, binary="xray"):
         if session is None:
             return None
         process, proxy, context = session
-        passed_probes, failed_probes = [], []
+        passed_probes, failed_probes, latencies = [], [], []
         for index, (url, ranges) in enumerate(probes, 1):
             label = _probe_label(url)
             try:
-                status, _, _, _ = _probe_url(proxy, url, timeout, context)
+                status, latency, _, _ = _probe_url(proxy, url, timeout, context)
                 failure = None if any(low <= status <= high for low, high in ranges) else f"returned HTTP {status}"
             except TimeoutError:
                 failure = "timed out"
@@ -283,21 +283,11 @@ def check_outbound(outbound, urls, timeout=10, binary="xray"):
                 failed_probes.append(f"{index} ({label}) {failure}")
             else:
                 passed_probes.append(f"{index} ({label}, HTTP {status})")
+                latencies.append(latency)
         if failed_probes:
             logger.warning("Outbound %s: failed probes: %s; passed: %s", description,
                            ", ".join(failed_probes), ", ".join(passed_probes) or "none")
             return None
-        latencies = []
-        for index, (url, ranges) in enumerate(probes, 1):
-            try:
-                status, latency, _, _ = _probe_url(proxy, url, timeout, context)
-            except (OSError, ValueError, HTTPException):
-                logger.warning("Outbound %s: latency check %d (%s) failed", description, index, _probe_label(url))
-                return None
-            if process.poll() is not None or not any(low <= status <= high for low, high in ranges):
-                logger.warning("Outbound %s: latency check %d (%s) failed", description, index, _probe_label(url))
-                return None
-            latencies.append(latency)
         latency_ms = sum(latencies) * 1000 / len(latencies)
         logger.info("Outbound %s: latency %.1f ms; passed probes: %s", description, latency_ms, ", ".join(passed_probes))
         return LatencyResult(latency_ms)

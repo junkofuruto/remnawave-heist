@@ -30,10 +30,13 @@ class Config:
     probe_urls: List[str] = field(default_factory=lambda: ["200-299 https://telegram.org/", "200-299 https://www.instagram.com/"], repr=False)
     probe_timeout: float = 10
     probe_concurrency: int = 4
+    probe_attempts: int = 3
+    state_file: Path = BASE_DIR / "state.json"
     max_outbounds: int = 20
     speed_test_url: str = field(default=DEFAULT_SPEED_URL, repr=False)
     speed_test_bytes: int = DEFAULT_SPEED_BYTES
     xray_binary: str = "xray"
+    log_file: Path = BASE_DIR / "logs" / "remnawave.log"
     ssl_ctx: Optional[ssl.SSLContext] = field(init=False, default=None, repr=False)
 
     def __post_init__(self):
@@ -63,7 +66,7 @@ def load_config(path: Path) -> Config:
         not isinstance(url, str) or not url.strip() for url in urls
     ):
         sys.exit("config value urls must be a non-empty list of non-empty strings")
-    for key in ("cert", "backup_dir", "geoip_cache_dir", "geoip_ipv4_url", "geoip_ipv6_url"):
+    for key in ("cert", "backup_dir", "geoip_cache_dir", "geoip_ipv4_url", "geoip_ipv6_url", "log_file", "state_file"):
         if key in data and (not isinstance(data[key], str) or not data[key].strip()):
             sys.exit(f"config value {key} must be a non-empty string")
 
@@ -117,6 +120,9 @@ def load_config(path: Path) -> Config:
     probe_concurrency = data.get("probe_concurrency", 4)
     if isinstance(probe_concurrency, bool) or not isinstance(probe_concurrency, int) or not 1 <= probe_concurrency <= 32:
         sys.exit("config value probe_concurrency must be an integer between 1 and 32")
+    probe_attempts = data.get("probe_attempts", 3)
+    if isinstance(probe_attempts, bool) or not isinstance(probe_attempts, int) or not 1 <= probe_attempts <= 10:
+        sys.exit("config value probe_attempts must be an integer between 1 and 10")
     max_outbounds = data.get("max_outbounds", 20)
     if isinstance(max_outbounds, bool) or not isinstance(max_outbounds, int) or not 1 <= max_outbounds <= 1000:
         sys.exit("config value max_outbounds must be an integer between 1 and 1000")
@@ -136,7 +142,7 @@ def load_config(path: Path) -> Config:
     if not isinstance(xray_binary, str) or not xray_binary.strip() or "\0" in xray_binary:
         sys.exit("config value xray_binary must be a non-empty executable name or path")
 
-    return Config(
+    result = Config(
         url=data["url"],
         token=data["token"],
         profile=data["profile"],
@@ -151,11 +157,22 @@ def load_config(path: Path) -> Config:
         probe_urls=probe_urls,
         probe_timeout=probe_timeout,
         probe_concurrency=probe_concurrency,
+        probe_attempts=probe_attempts,
+        state_file=Path(data.get("state_file", BASE_DIR / "state.json")),
         max_outbounds=max_outbounds,
         speed_test_url=speed_test_url,
         speed_test_bytes=speed_test_bytes,
         xray_binary=xray_binary,
+        log_file=Path(data.get("log_file", BASE_DIR / "logs" / "remnawave.log")),
     )
+    protected = {path.resolve(), result.log_file.resolve()}
+    if result.cert is not None:
+        protected.add(result.cert.resolve())
+    state_path = result.state_file.resolve()
+    lock_path = result.state_file.with_name(result.state_file.name + ".lock").resolve()
+    if state_path in protected or lock_path in protected or state_path == lock_path:
+        sys.exit("config value state_file and its lock must differ from config, certificate and log paths")
+    return result
 
 
 config = load_config(CONFIG_FILE)
