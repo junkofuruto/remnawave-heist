@@ -125,16 +125,52 @@ def save_checked_state(state):
         raise SystemExit(1) from None
 
 
+def _routing_tag_references(value):
+    """Collect explicit outbound-tag references from a profile's routing rules."""
+    if isinstance(value, dict):
+        references = set()
+        for key, child in value.items():
+            if key in ("outboundTag", "fallbackTag") and isinstance(child, str):
+                references.add(child)
+            else:
+                references.update(_routing_tag_references(child))
+        return references
+    if isinstance(value, list):
+        return set().union(*(_routing_tag_references(item) for item in value)) if value else set()
+    return set()
+
+
 def publish_saved(state, api, profile, run_id, retired_active=None):
     original = profile.get("config", profile)
     if isinstance(original, str):
         original = json.loads(original)
     ranked = rank_saved(state)
+    # Keep the panel's existing tag for active configurations: routing rules may
+    # reference it. For duplicate hashes, preserve the first panel occurrence.
+    panel_managed = {}
+    for outbound in original.get("outbounds", []):
+        if str(outbound.get("tag", "")).startswith(TAG_PREFIX):
+            panel_managed.setdefault(outbound_hash(outbound), outbound)
+    for item in ranked:
+        digest = outbound_hash(item["outbound"])
+        if item.get("active") and digest in panel_managed:
+            item["outbound"] = copy.deepcopy(panel_managed[digest])
     # Keep healthy active entries stable; fill vacancies from the best reserve.
     active = [item for item in ranked if item.get("active")][:config.max_outbounds]
     active_hashes = {outbound_hash(item["outbound"]) for item in active}
     reserve = [item for item in ranked if outbound_hash(item["outbound"]) not in active_hashes]
     selected = active + reserve[:config.max_outbounds - len(active)]
+    panel_references = _routing_tag_references(original.get("routing", {}))
+    duplicate_tags = {}
+    for outbound in original.get("outbounds", []):
+        tag = outbound.get("tag")
+        if isinstance(tag, str) and tag.startswith(TAG_PREFIX):
+            duplicate_tags.setdefault(outbound_hash(outbound), []).append(outbound)
+    for item in selected:
+        matches = duplicate_tags.get(outbound_hash(item["outbound"]), [])
+        referenced = [candidate for candidate in matches if candidate.get("tag") in panel_references]
+        if referenced:
+            item["outbound"] = copy.deepcopy(referenced[0])
     if not selected:
         logger.error("No healthy replacement available; profile not changed")
         raise SystemExit(1)
@@ -144,6 +180,24 @@ def publish_saved(state, api, profile, run_id, retired_active=None):
         logger.warning("Profile has no outbound(s): %s", ", ".join(sorted(missing_fixed)))
     base = [outbound for outbound in existing if not str(outbound.get("tag", "")).startswith(TAG_PREFIX)]
     proposed = base + [item["outbound"] for item in selected]
+    removed_tags = {item.get("tag") for item in existing if isinstance(item.get("tag"), str)} - {
+        item.get("tag") for item in proposed if isinstance(item.get("tag"), str)
+    }
+    referenced = removed_tags & panel_references
+    if referenced:
+        logger.error("Cannot remove %d managed outbound(s) referenced by routing rules; profile not changed", len(referenced))
+        raise SystemExit(1)
+    previous_managed = [item for item in existing if str(item.get("tag", "")).startswith(TAG_PREFIX)]
+    proposed_managed = [item for item in proposed if str(item.get("tag", "")).startswith(TAG_PREFIX)]
+    old_by_tag = {}
+    for item in previous_managed:
+        old_by_tag.setdefault(item.get("tag"), set()).add(outbound_hash(item))
+    stable_tag_change = any(item.get("tag") in old_by_tag
+                            and outbound_hash(item) not in old_by_tag[item.get("tag")]
+                            for item in proposed_managed)
+    if stable_tag_change:
+        logger.error("A managed tag would be reused for a different configuration; profile not changed")
+        raise SystemExit(1)
     if proposed == existing:
         if not DRY_RUN:
             selected_hashes = {outbound_hash(item["outbound"]) for item in selected}
@@ -182,6 +236,8 @@ def publish_saved(state, api, profile, run_id, retired_active=None):
     state.pop("pending", None)
     save_checked_state(state)
     logger.info("Published %d healthy outbounds; backup: %s", len(selected), backup)
+    if retired_active:
+        logger.info("Removed %d active configuration(s) absent from refreshed subscriptions", len(retired_active))
     return selected, proposed
 
 
@@ -258,17 +314,23 @@ def run_routines():
         pending_update = state.get("pending")
         if pending_update:
             actual = panel_config.get("outbounds", [])
-            if actual not in (pending_update["previous"], pending_update["proposed"]):
+            if actual == pending_update["proposed"]:
+                applied = True
+            elif actual == pending_update["previous"]:
+                applied = False
+            else:
                 raise StateError("panel differs from pending update; manual reconciliation required")
-            if actual == pending_update["previous"]:
+            if not applied:
                 state["outbounds"].update(pending_update.get("previous_records", {}))
             logger.info("Reconciled an interrupted panel update against the current profile")
             state.pop("pending")
         managed = [item for item in panel_config.get("outbounds", [])
                    if str(item.get("tag", "")).startswith(TAG_PREFIX)]
         panel_hashes = {outbound_hash(item) for item in managed}
-        if len(panel_hashes) != len(managed):
-            raise StateError("panel contains duplicate managed outbounds; manual reconciliation required")
+        duplicate_count = len(managed) - len(panel_hashes)
+        if duplicate_count:
+            logger.warning("Panel contains %d duplicate managed outbound(s); they will be reconciled after successful checks",
+                           duplicate_count)
         saved = state["outbounds"]
         unknown_active = panel_hashes - set(saved)
         if saved and unknown_active:
@@ -312,6 +374,17 @@ def run_routines():
                     profile_config = json.loads(profile_config)
                     profile["config"] = profile_config
                 profile_config["outbounds"] = first_outbounds
+            else:
+                profile = copy.deepcopy(profile)
+                profile_config = profile.get("config", profile)
+                if isinstance(profile_config, str):
+                    profile_config = json.loads(profile_config)
+                    profile["config"] = profile_config
+                profile_config["outbounds"] = [item for item in profile_config.get("outbounds", [])
+                                               if not str(item.get("tag", "")).startswith(TAG_PREFIX)] + [
+                                                   item["outbound"] for item in first_selection]
+            panel_hashes = {outbound_hash(item) for item in profile_config["outbounds"]
+                            if str(item.get("tag", "")).startswith(TAG_PREFIX)}
         elif saved:
             logger.warning("No saved outbounds passed; checking subscriptions for replacements")
 
@@ -329,6 +402,9 @@ def run_routines():
         logger.info("Found %d new configurations", len(new_candidates))
         passing_new = probe_candidates(new_candidates, geoip)
         update_pool(state, passing_new)
+        for item in saved.values():
+            if outbound_hash(item["outbound"]) in panel_hashes:
+                item["active"] = True
         now = datetime.now(timezone.utc).isoformat()
         for outbound, sources in new_candidates:
             digest = outbound_hash(outbound)

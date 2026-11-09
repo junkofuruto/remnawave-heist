@@ -45,7 +45,11 @@ Optional JSON settings:
   with mode `0600`. Keep custom state paths and their `.lock` files private and
   out of version control. If the state file is lost while the panel still has
   managed outbounds, bootstrap requires a successful subscription refresh and
-  probes; back up this file securely.
+  probes; back up this file securely. If there are duplicate managed outbounds,
+  matching configurations are reconciled by hash after a successful refresh;
+  an explicitly referenced panel tag is preserved where possible, otherwise the
+  first existing panel tag is retained. Reconciliation stops if removing a tag
+  would break another explicit routing-rule reference.
 - `probe_timeout`: timeout in seconds for each probe request (default 10, maximum
   120). Multiple candidates and URLs can make a run take several minutes.
 - `probe_concurrency`: maximum number of candidate outbounds checked in parallel
