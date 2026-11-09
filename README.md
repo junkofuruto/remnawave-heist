@@ -125,9 +125,11 @@ and reserve outbounds are rechecked with the configured retry count, and failed
 active entries are replaced from the healthy saved pool when possible. Second,
 subscriptions are refreshed and newly discovered configurations are checked. A
 saved configuration that is absent from all successfully refreshed sources is
-removed and replaced if a healthy candidate is available. Any failed, empty, or
-invalid subscription aborts the refresh without treating it as a deletion; a
-completed first-routine health update may already have been applied.
+removed and replaced if a healthy candidate is available. Invalid individual
+VLESS entries are skipped; if a subscription contains any invalid entries,
+previously saved entries from that source are retained until a clean refresh.
+A failed, empty, or wholly invalid subscription aborts the refresh without
+removals; a completed first-routine health update may already have been applied.
 
 Configuration identity is SHA-256 of canonical outbound JSON excluding its tag;
 subscription identities are hashes of their URLs. The state stores full outbound

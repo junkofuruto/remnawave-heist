@@ -70,6 +70,7 @@ def probe_candidates(candidates, geoip):
 def refresh_subscriptions(opener):
     """Fetch every source before accepting removals; deduplicate by config hash."""
     discovered = {}
+    incomplete_sources = set()
     for index, url in enumerate(config.urls, 1):
         logger.info("Reading subscription %d/%d", index, len(config.urls))
         try:
@@ -93,9 +94,8 @@ def refresh_subscriptions(opener):
                     raise ValueError("missing server or user")
                 digest = outbound_hash(outbound)
                 outbound["tag"] = f"{TAG_PREFIX}{digest[:16]}-{slug}"
-            except Exception:
+            except (ValueError, TypeError, KeyError, IndexError, UnicodeError):
                 invalid_count += 1
-                logger.warning("Invalid VLESS configuration in subscription %d", index)
                 continue
             valid_count += 1
             if digest in discovered:
@@ -103,10 +103,14 @@ def refresh_subscriptions(opener):
                     discovered[digest][1].append(source)
             else:
                 discovered[digest] = (outbound, [source])
-        if not valid_count or invalid_count:
-            logger.error("Subscription %d is empty or invalid; keeping saved state", index)
+        if not valid_count:
+            logger.error("Subscription %d has no valid VLESS configurations; keeping saved state", index)
             raise SystemExit(1)
-    return discovered
+        if invalid_count:
+            incomplete_sources.add(source)
+            logger.warning("Skipped %d invalid VLESS configuration(s) in subscription %d; preserving previous entries until a clean refresh",
+                           invalid_count, index)
+    return discovered, incomplete_sources
 
 
 def rank_saved(state):
@@ -390,14 +394,21 @@ def run_routines():
 
         # Routine 2: only a complete successful refresh can remove entries.
         logger.info("Routine 2: checking subscriptions for updates")
-        discovered = refresh_subscriptions(opener)
+        discovered, incomplete_sources = refresh_subscriptions(opener)
+        retained_sources = {}
+        for digest, item in saved.items():
+            seen_sources = discovered[digest][1] if digest in discovered else []
+            retained = [source for source in item["sources"] if source in incomplete_sources]
+            sources = list(dict.fromkeys(seen_sources + retained))
+            if sources:
+                retained_sources[digest] = sources
         dropped_active = {digest: copy.deepcopy(item) for digest, item in saved.items()
-                          if digest not in discovered and item.get("active")}
+                          if digest not in retained_sources and item.get("active")}
         for digest in list(saved):
-            if digest not in discovered:
+            if digest not in retained_sources:
                 del saved[digest]
             else:
-                saved[digest]["sources"] = discovered[digest][1]
+                saved[digest]["sources"] = retained_sources[digest]
         new_candidates = [value for digest, value in discovered.items() if digest not in saved]
         logger.info("Found %d new configurations", len(new_candidates))
         passing_new = probe_candidates(new_candidates, geoip)
