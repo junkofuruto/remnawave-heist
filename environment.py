@@ -8,7 +8,7 @@ from typing import List, Optional
 from urllib.parse import unquote, urlsplit
 
 from geoip import DEFAULT_GEOIP_IPV4_URL, DEFAULT_GEOIP_IPV6_URL
-from xray_probe import parse_probe_entry
+from xray_probe import DEFAULT_SPEED_BYTES, DEFAULT_SPEED_URL, parse_probe_entry
 
 BASE_DIR = Path(__file__).resolve().parent
 CONFIG_FILE = Path(os.environ.get("REMNAWAVE_CONFIG_FILE", BASE_DIR / "config.json"))
@@ -30,6 +30,9 @@ class Config:
     probe_urls: List[str] = field(default_factory=lambda: ["200-299 https://telegram.org/", "200-299 https://www.instagram.com/"], repr=False)
     probe_timeout: float = 10
     probe_concurrency: int = 4
+    max_outbounds: int = 20
+    speed_test_url: str = field(default=DEFAULT_SPEED_URL, repr=False)
+    speed_test_bytes: int = DEFAULT_SPEED_BYTES
     xray_binary: str = "xray"
     ssl_ctx: Optional[ssl.SSLContext] = field(init=False, default=None, repr=False)
 
@@ -114,6 +117,21 @@ def load_config(path: Path) -> Config:
     probe_concurrency = data.get("probe_concurrency", 4)
     if isinstance(probe_concurrency, bool) or not isinstance(probe_concurrency, int) or not 1 <= probe_concurrency <= 32:
         sys.exit("config value probe_concurrency must be an integer between 1 and 32")
+    max_outbounds = data.get("max_outbounds", 20)
+    if isinstance(max_outbounds, bool) or not isinstance(max_outbounds, int) or not 1 <= max_outbounds <= 1000:
+        sys.exit("config value max_outbounds must be an integer between 1 and 1000")
+    speed_test_url = data.get("speed_test_url", DEFAULT_SPEED_URL)
+    if not isinstance(speed_test_url, str) or any(ch.isspace() for ch in speed_test_url):
+        sys.exit("config value speed_test_url must be a valid HTTPS URL")
+    try:
+        parsed_speed_url, _ = parse_probe_entry(speed_test_url)
+        if parsed_speed_url != speed_test_url:
+            raise ValueError
+    except ValueError:
+        sys.exit("config value speed_test_url must be a valid HTTPS URL without credentials or a fragment")
+    speed_test_bytes = data.get("speed_test_bytes", DEFAULT_SPEED_BYTES)
+    if isinstance(speed_test_bytes, bool) or not isinstance(speed_test_bytes, int) or not 1 <= speed_test_bytes <= 100_000_000:
+        sys.exit("config value speed_test_bytes must be an integer between 1 and 100000000")
     xray_binary = data.get("xray_binary", "xray")
     if not isinstance(xray_binary, str) or not xray_binary.strip() or "\0" in xray_binary:
         sys.exit("config value xray_binary must be a non-empty executable name or path")
@@ -133,6 +151,9 @@ def load_config(path: Path) -> Config:
         probe_urls=probe_urls,
         probe_timeout=probe_timeout,
         probe_concurrency=probe_concurrency,
+        max_outbounds=max_outbounds,
+        speed_test_url=speed_test_url,
+        speed_test_bytes=speed_test_bytes,
         xray_binary=xray_binary,
     )
 

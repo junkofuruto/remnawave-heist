@@ -3,8 +3,9 @@
 Copy `config.example.json` to `config.json`, restrict access to that file, and
 fill in the panel `url`, API `token`, `profile` UUID, and the list of
 subscription `urls`. The configuration file contains credentials and is ignored
-by Git. Links from the subscriptions are combined in order, deduplicated, and
-limited to 20 outbounds.
+by Git. Links from the subscriptions are combined and deduplicated. Passing
+outbounds are ranked by measured speed and latency before the configured limit
+is applied.
 
 Configuration is loaded from `config.json` beside `environment.py`, regardless
 of the current working directory. Set `REMNAWAVE_CONFIG_FILE` to select a
@@ -28,16 +29,26 @@ Optional JSON settings:
   not followed; permit `300-399` explicitly if those responses are acceptable.
   Choose URLs that are stable and suitable for your network. Each checked
   outbound produces one result line containing its generated tag and successful
-  probes. Failures also identify the first failed probe by position and hostname
-  (and port, if specified); URL paths and query parameters are not logged. Later
-  probes are not attempted for that candidate.
+  probes. Failures identify all failed probes by position and hostname (and port,
+  if specified); URL paths and query parameters are not logged. All configured
+  status probes are attempted unless the Xray process exits.
 - `probe_timeout`: timeout in seconds for each probe request (default 10, maximum
   120). Multiple candidates and URLs can make a run take several minutes.
 - `probe_concurrency`: maximum number of candidate outbounds checked in parallel
   (default 4, range 1–32). Each active check starts its own Xray process; probe
-  URLs for an individual outbound remain sequential. Results retain subscription
-  order, though log lines appear as checks complete. The 20-outbound limit also
-  limits the number of simultaneous candidate checks.
+  URLs for an individual outbound remain sequential. All location-matched
+  candidates are tested, so logs appear in completion order and a run may consume
+  significant bandwidth and time.
+- `max_outbounds`: maximum number of best passing candidates to add to the
+  profile (default 20, range 1–1000).
+- `speed_test_url`: HTTPS URL serving at least `speed_test_bytes` bytes, default
+  `https://speed.cloudflare.com/__down?bytes=1000000`. It must return HTTP 200 or
+  206; redirects and shorter responses fail the speed check. The target receives
+  the outbound server's IP. Change it if unavailable or unsuitable.
+- `speed_test_bytes`: bytes to download per candidate (default 1,000,000; range
+  1–100,000,000). Match the server URL's payload size to this value. A Range
+  request is sent and at most this many bytes are read; a server that ignores the
+  header may send additional data before the connection closes.
 - `xray_binary`: Xray executable name or path (default `xray`). Xray must be
   installed and accessible to the user running the updater.
 - `proxy`: optional HTTP or SOCKS5 proxy URL for subscription and GeoIP
@@ -80,17 +91,24 @@ The outbound's address is looked up directly if it is an IP, or resolved through
 system DNS if it is a hostname. Every returned IP must be public and match a
 European country in the database; unknown, unresolved, private, and mixed-region
 addresses are excluded. The Europe country-code allowlist in `geoip.py` includes
-the UK, Russia, Turkey, and Cyprus. It is country-level, so a country spanning
-continents may include locations outside Europe. GeoIP can be inaccurate or stale;
+the UK, Turkey, and Cyprus but excludes Russia. It is country-level, so a country
+spanning continents may include locations outside Europe. GeoIP can be inaccurate or stale;
 DNS answers may also change or differ where the panel runs. If a database cannot
 be loaded or no outbounds match, the profile is left unchanged. Filtering happens
-before the 20-outbound limit.
+before the configured outbound limit.
 
 Each location-matched candidate is checked before being added. A temporary Xray
 process receives the candidate configuration through an anonymous temporary file
 and exposes a randomly assigned, password-protected SOCKS inbound on loopback.
 Probe requests go through that inbound and the candidate, not the configured
-subscription-download proxy. All probe URLs must succeed. The Xray process is
+subscription-download proxy. All probe URLs and the speed download must succeed.
+Latency is the average time from starting the SOCKS connection to receiving HTTP
+headers across the status probes. Download speed is measured in Mbps over the
+whole speed request, including connection setup and time to first byte. Candidates
+are ranked by higher speed, with lower latency breaking exact speed ties; the
+report lists selected outbounds and their source subscription number. Duplicate
+links are attributed to their first subscription. Measurements are approximate
+and concurrent tests share available bandwidth. The Xray process is
 stopped after each candidate; if Xray cannot be started or no candidates pass,
 the panel profile is left unchanged. Dry runs perform these checks too. Probe
 URLs must be HTTPS and the local system's default trust store must trust their

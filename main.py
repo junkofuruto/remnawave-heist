@@ -17,24 +17,23 @@ logger = logging.getLogger("remnawave.main")
 
 TAG_PREFIX = "out-auto-"
 FIXED_TAGS = ("direct", "block")
-MAX_OUTBOUNDS = 20
 DRY_RUN = "--dry-run" in sys.argv
 
 def select_outbounds(opener, geoip, run_id):
     seen = set()
-    selected = []
+    results = []
     pending = deque()
     candidate_number = 0
 
     def collect_one():
-        outbound, future = pending.popleft()
+        outbound, subscription, future = pending.popleft()
         try:
-            passed = future.result()
+            measurement = future.result()
         except XrayProbeError as e:
             logger.error("Outbound %s: %s; profile not changed", outbound["tag"], e)
             raise SystemExit(1) from None
-        if passed and len(selected) < MAX_OUTBOUNDS:
-            selected.append(outbound)
+        if measurement:
+            results.append((outbound, subscription, measurement))
 
     def drain_pending():
         while pending:
@@ -66,20 +65,16 @@ def select_outbounds(opener, geoip, run_id):
                         continue
                     candidate_number += 1
                     future = pool.submit(check_outbound, outbound, config.probe_urls,
-                                         config.probe_timeout, config.xray_binary)
-                    pending.append((outbound, future))
+                                         config.probe_timeout, config.xray_binary,
+                                         config.speed_test_url, config.speed_test_bytes)
+                    pending.append((outbound, index, future))
                     if len(pending) >= config.probe_concurrency:
                         collect_one()
-                    while pending and len(selected) + len(pending) >= MAX_OUTBOUNDS:
-                        collect_one()
-                    if len(selected) == MAX_OUTBOUNDS:
-                        break
-                if len(selected) == MAX_OUTBOUNDS:
-                    break
             drain_pending()
-            return selected
+            results.sort(key=lambda item: (-item[2].download_mbps, item[2].latency_ms))
+            return results[:config.max_outbounds]
         finally:
-            for _, future in pending:
+            for _, _, future in pending:
                 future.cancel()
 
 
@@ -102,10 +97,15 @@ def main():
             raise SystemExit(1) from None
     logger.info("Checking candidates with up to %d concurrent Xray processes", config.probe_concurrency)
     run_id = secrets.token_hex(4)
-    new_outbounds = select_outbounds(opener, geoip, run_id)
-    if not new_outbounds:
+    ranked = select_outbounds(opener, geoip, run_id)
+    if not ranked:
         logger.error("No outbounds passed location and connectivity checks; profile not changed")
         raise SystemExit(1)
+    logger.info("Best passing outbounds (ranked by download speed, then latency):")
+    for rank, (outbound, subscription, measurement) in enumerate(ranked, 1):
+        logger.info("#%d subscription %d | %s | %.2f Mbps | %.1f ms", rank, subscription,
+                    outbound["tag"], measurement.download_mbps, measurement.latency_ms)
+    new_outbounds = [outbound for outbound, _, _ in ranked]
     logger.info("Selected %d outbounds", len(new_outbounds))
 
     logger.info("Fetching profile")
