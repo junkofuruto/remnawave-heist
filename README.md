@@ -37,8 +37,10 @@ Optional JSON settings:
 - `probe_concurrency`: maximum number of candidate outbounds checked in parallel
   (default 4, range 1–32). Each active check starts its own Xray process; probe
   URLs for an individual outbound remain sequential. All location-matched
-  candidates are tested, so logs appear in completion order and a run may consume
-  significant bandwidth and time.
+  candidates are checked and, if they pass, measured for latency. Speed tests
+  run first on the initially selected candidates, then on the remaining passing
+  candidates; logs appear in completion order. Tests can consume significant
+  bandwidth and time.
 - `max_outbounds`: maximum number of best passing candidates to add to the
   profile (default 20, range 1–1000).
 - `speed_test_url`: HTTPS URL serving at least `speed_test_bytes` bytes, default
@@ -101,18 +103,34 @@ Each location-matched candidate is checked before being added. A temporary Xray
 process receives the candidate configuration through an anonymous temporary file
 and exposes a randomly assigned, password-protected SOCKS inbound on loopback.
 Probe requests go through that inbound and the candidate, not the configured
-subscription-download proxy. All probe URLs and the speed download must succeed.
+subscription-download proxy. Only candidates passing every status probe receive
+separate latency checks. After those checks, the lowest-latency candidates are
+immediately published as a temporary selection, then speed-tested first. The
+remaining probe-passing candidates are speed-tested afterward; a faster candidate
+replaces the slowest selected candidate, with latency breaking exact speed ties.
+Failed speed checks are excluded from the final selection. After the initial
+speed tests, the profile can temporarily contain fewer than `max_outbounds` if
+some of those tests fail; later passing candidates fill vacancies.
+
 Latency is the average time from starting the SOCKS connection to receiving HTTP
-headers across the status probes. Download speed is measured in Mbps over the
-whole speed request, including connection setup and time to first byte. Candidates
-are ranked by higher speed, with lower latency breaking exact speed ties; the
-report lists selected outbounds and their source subscription number. Duplicate
-links are attributed to their first subscription. Measurements are approximate
-and concurrent tests share available bandwidth. The Xray process is
-stopped after each candidate; if Xray cannot be started or no candidates pass,
-the panel profile is left unchanged. Dry runs perform these checks too. Probe
-URLs must be HTTPS and the local system's default trust store must trust their
-certificates.
+headers across a second set of requests to the status probe URLs. Download speed
+is measured in Mbps over the whole speed request, including connection setup and
+time to first byte. The final report lists selected outbounds and their source
+subscription number. Duplicate links are attributed to their first subscription.
+Measurements are approximate and concurrent tests share available bandwidth.
+
+The original profile is backed up before the first panel update. If Xray cannot
+start or no candidate passes the status and latency checks, no panel update is
+made. If the process is interrupted, an update fails, or no speed check passes,
+the last successful selection may remain active; restore the saved backup manually
+if needed. Before each update, the current panel outbounds are re-read and
+compared with the last observed selection; changes made by someone else stop the
+run. Non-outbound fields are refreshed, but because the API update is not atomic,
+concurrent edits between the read and write can still be overwritten. Avoid
+editing the profile while this script is running. Dry runs perform all checks
+and simulate publications, but never update the panel. Probe URLs must be HTTPS
+and their certificates trusted by the local system. Linux `/proc` access is needed
+to verify that each temporary listening port belongs to the Xray process.
 
 Explicit relative paths are interpreted relative to the current working
 directory. Run `python3 main.py --dry-run` to inspect proposed outbound changes

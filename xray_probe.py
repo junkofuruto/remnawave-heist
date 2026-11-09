@@ -1,6 +1,7 @@
 import http.client
 import json
 import logging
+import os
 import re
 import secrets
 import shutil
@@ -11,6 +12,7 @@ import tempfile
 import time
 import urllib.parse
 
+from contextlib import contextmanager
 from dataclasses import dataclass
 from http.client import HTTPException
 
@@ -25,8 +27,12 @@ DEFAULT_SPEED_BYTES = 1_000_000
 
 
 @dataclass(frozen=True)
-class ProbeResult:
+class LatencyResult:
     latency_ms: float
+
+
+@dataclass(frozen=True)
+class SpeedResult:
     download_mbps: float
     download_bytes: int
     speed_seconds: float
@@ -149,6 +155,28 @@ def _available_port():
         return sock.getsockname()[1]
 
 
+def _xray_listens_on(process, port):
+    """Verify that the ready TCP listener belongs to this Xray process (Linux)."""
+    inodes = set()
+    try:
+        for fd in os.listdir(f"/proc/{process.pid}/fd"):
+            try:
+                target = os.readlink(f"/proc/{process.pid}/fd/{fd}")
+            except FileNotFoundError:
+                continue
+            if target.startswith("socket:[") and target.endswith("]"):
+                inodes.add(target[8:-1])
+        with open(f"/proc/{process.pid}/net/tcp", encoding="ascii") as table:
+            for row in table:
+                fields = row.split()
+                if len(fields) > 9 and fields[1] == f"0100007F:{port:04X}" and fields[3] == "0A":
+                    if fields[9] in inodes:
+                        return True
+    except OSError as e:
+        raise XrayProbeError("cannot verify local Xray listener ownership") from e
+    return False
+
+
 def _stop(process):
     try:
         if process.poll() is None:
@@ -164,23 +192,8 @@ def _stop(process):
         process.wait()
 
 
-def check_outbound(outbound, urls, timeout=10, binary="xray",
-                   speed_url=DEFAULT_SPEED_URL, speed_bytes=DEFAULT_SPEED_BYTES):
-    """Return measurements only when every connectivity and speed check succeeds."""
-    if not urls:
-        raise XrayProbeError("at least one outbound probe URL is required")
-    try:
-        probes = [parse_probe_entry(entry) for entry in urls]
-    except ValueError as e:
-        raise XrayProbeError("invalid outbound probe configuration") from e
-    try:
-        parsed_speed_url, _ = parse_probe_entry(speed_url)
-        if parsed_speed_url != speed_url:
-            raise ValueError
-    except ValueError as e:
-        raise XrayProbeError("invalid speed test URL") from e
-    if isinstance(speed_bytes, bool) or not isinstance(speed_bytes, int) or speed_bytes < 1:
-        raise XrayProbeError("invalid speed test size")
+@contextmanager
+def _xray_session(outbound, binary):
     description = _outbound_label(outbound)
     try:
         port = _available_port()
@@ -207,72 +220,119 @@ def check_outbound(outbound, urls, timeout=10, binary="xray",
         while time.monotonic() < deadline:
             if process.poll() is not None:
                 logger.warning("Outbound %s: Xray exited before the probe inbound was ready", description)
-                return False
+                yield None
+                return
             try:
-                with socket.create_connection(("127.0.0.1", port), timeout=0.2):
+                if _xray_listens_on(process, port):
                     break
-            except OSError:
-                time.sleep(0.05)
+            except XrayProbeError:
+                if process.poll() is not None:
+                    logger.warning("Outbound %s: Xray exited before the probe inbound was ready", description)
+                    yield None
+                    return
+                raise
+            time.sleep(0.05)
         else:
             logger.warning("Outbound %s: Xray probe inbound did not start in time", description)
-            return False
+            yield None
+            return
         if process.poll() is not None:
             logger.warning("Outbound %s: Xray exited before probing", description)
-            return False
-        proxy = f"socks5h://{username}:{password}@127.0.0.1:{port}"
+            yield None
+            return
         try:
             context = ssl.create_default_context()
         except OSError as e:
             raise XrayProbeError("cannot initialize TLS for outbound probes") from e
-        passed_probes = []
-        latencies = []
-        failed_probes = []
+        yield process, f"socks5h://{username}:{password}@127.0.0.1:{port}", context
+    finally:
+        _stop(process)
+
+
+
+
+def check_outbound(outbound, urls, timeout=10, binary="xray"):
+    """Check connectivity, then measure latency only for passing candidates."""
+    if not urls:
+        raise XrayProbeError("at least one outbound probe URL is required")
+    try:
+        probes = [parse_probe_entry(entry) for entry in urls]
+    except ValueError as e:
+        raise XrayProbeError("invalid outbound probe configuration") from e
+    description = _outbound_label(outbound)
+    with _xray_session(outbound, binary) as session:
+        if session is None:
+            return None
+        process, proxy, context = session
+        passed_probes, failed_probes = [], []
         for index, (url, ranges) in enumerate(probes, 1):
             label = _probe_label(url)
-            failure = None
             try:
-                status, latency, _, _ = _probe_url(proxy, url, timeout, context)
-                if not any(low <= status <= high for low, high in ranges):
-                    failure = f"returned HTTP {status}"
+                status, _, _, _ = _probe_url(proxy, url, timeout, context)
+                failure = None if any(low <= status <= high for low, high in ranges) else f"returned HTTP {status}"
+            except TimeoutError:
+                failure = "timed out"
+            except ssl.SSLCertVerificationError:
+                failure = "failed TLS certificate verification"
             except (OSError, ValueError, HTTPException):
                 failure = "failed"
-            report = ", ".join(passed_probes) or "none"
             if process.poll() is not None:
-                logger.warning("Outbound %s: Xray exited during probe %d (%s); passed: %s",
-                               description, index, label, report)
-                return False
+                logger.warning("Outbound %s: Xray exited during probe %d (%s)", description, index, label)
+                return None
             if failure:
                 failed_probes.append(f"{index} ({label}) {failure}")
-                continue
-            latencies.append(latency)
-            passed_probes.append(f"{index} ({label}, HTTP {status})")
+            else:
+                passed_probes.append(f"{index} ({label}, HTTP {status})")
         if failed_probes:
             logger.warning("Outbound %s: failed probes: %s; passed: %s", description,
                            ", ".join(failed_probes), ", ".join(passed_probes) or "none")
-            return False
+            return None
+        latencies = []
+        for index, (url, ranges) in enumerate(probes, 1):
+            try:
+                status, latency, _, _ = _probe_url(proxy, url, timeout, context)
+            except (OSError, ValueError, HTTPException):
+                logger.warning("Outbound %s: latency check %d (%s) failed", description, index, _probe_label(url))
+                return None
+            if process.poll() is not None or not any(low <= status <= high for low, high in ranges):
+                logger.warning("Outbound %s: latency check %d (%s) failed", description, index, _probe_label(url))
+                return None
+            latencies.append(latency)
+        latency_ms = sum(latencies) * 1000 / len(latencies)
+        logger.info("Outbound %s: latency %.1f ms; passed probes: %s", description, latency_ms, ", ".join(passed_probes))
+        return LatencyResult(latency_ms)
+
+
+def check_speed(outbound, speed_url=DEFAULT_SPEED_URL, speed_bytes=DEFAULT_SPEED_BYTES, timeout=10, binary="xray"):
+    """Measure download speed through a fresh isolated Xray process."""
+    try:
+        parsed_speed_url, _ = parse_probe_entry(speed_url)
+        if parsed_speed_url != speed_url:
+            raise ValueError
+    except ValueError as e:
+        raise XrayProbeError("invalid speed test URL") from e
+    if isinstance(speed_bytes, bool) or not isinstance(speed_bytes, int) or speed_bytes < 1:
+        raise XrayProbeError("invalid speed test size")
+    description = _outbound_label(outbound)
+    with _xray_session(outbound, binary) as session:
+        if session is None:
+            return None
+        process, proxy, context = session
         speed_label = _probe_label(speed_url)
         try:
-            speed_status, _, size, duration = _probe_url(proxy, speed_url, timeout, context, speed_bytes)
-            if speed_status not in (200, 206):
-                logger.warning("Outbound %s: speed check (%s) returned HTTP %d", description, speed_label, speed_status)
+            status, _, size, duration = _probe_url(proxy, speed_url, timeout, context, speed_bytes)
+            if status not in (200, 206):
+                logger.warning("Outbound %s: speed check (%s) returned HTTP %d", description, speed_label, status)
                 return None
             if size < speed_bytes:
-                logger.warning("Outbound %s: speed check (%s) returned %d/%d bytes",
-                               description, speed_label, size, speed_bytes)
+                logger.warning("Outbound %s: speed check (%s) returned %d/%d bytes", description, speed_label, size, speed_bytes)
                 return None
         except (OSError, ValueError, HTTPException):
             logger.warning("Outbound %s: speed check (%s) failed", description, speed_label)
             return None
-        if process.poll() is not None:
-            logger.warning("Outbound %s: Xray exited during speed check", description)
+        if process.poll() is not None or duration <= 0:
+            logger.warning("Outbound %s: Xray exited or speed duration was invalid", description)
             return None
-        if duration <= 0:
-            logger.warning("Outbound %s: speed check duration was invalid", description)
-            return None
-        latency_ms = sum(latencies) * 1000 / len(latencies)
-        download_mbps = size * 8 / duration / 1_000_000
-        logger.info("Outbound %s: latency %.1f ms, download %.2f Mbps; passed probes: %s",
-                    description, latency_ms, download_mbps, ", ".join(passed_probes))
-        return ProbeResult(latency_ms, download_mbps, size, duration)
-    finally:
-        _stop(process)
+        mbps = size * 8 / duration / 1_000_000
+        logger.info("Outbound %s: download %.2f Mbps", description, mbps)
+        return SpeedResult(mbps, size, duration)

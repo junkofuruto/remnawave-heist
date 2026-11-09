@@ -1,9 +1,14 @@
+import copy
 import json
 import logging
 import urllib.error
 import urllib.request
 
 logger = logging.getLogger("remnawave.api")
+
+class ProfileConflictError(Exception):
+    pass
+
 
 class RemnawaveAPI:
     def __init__(self, url, token, ssl_ctx=None):
@@ -43,6 +48,17 @@ class RemnawaveAPI:
 
     def get_profile(self, profile_uuid):
         return self.request("GET", f"/api/config-profiles/{profile_uuid}")
+
+    def update_outbounds(self, profile_uuid, expected_outbounds, new_outbounds):
+        profile = self.get_profile(profile_uuid)
+        latest = profile.get("config", profile)
+        if isinstance(latest, str):
+            latest = json.loads(latest)
+        if latest.get("outbounds", []) != expected_outbounds:
+            raise ProfileConflictError("profile outbounds changed since the previous update")
+        updated = copy.deepcopy(latest)
+        updated["outbounds"] = copy.deepcopy(new_outbounds)
+        self.update_profile(profile_uuid, updated)
 
     def update_profile(self, profile_uuid, config):
         return self.request("PATCH", "/api/config-profiles", {"uuid": profile_uuid, "config": config})
