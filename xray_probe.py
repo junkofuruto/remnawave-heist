@@ -285,8 +285,7 @@ def check_outbound(outbound, urls, timeout=10, binary="xray"):
                 passed_probes.append(f"{index} ({label}, HTTP {status})")
                 latencies.append(latency)
         if failed_probes:
-            logger.warning("Outbound %s: failed probes: %s; passed: %s", description,
-                           ", ".join(failed_probes), ", ".join(passed_probes) or "none")
+            logger.warning("Outbound %s: failed probes: %d; passed: %d", description, len(failed_probes), len(passed_probes))
             return None
         latency_ms = sum(latencies) * 1000 / len(latencies)
         logger.info("Outbound %s: latency %.1f ms; passed probes: %s", description, latency_ms, ", ".join(passed_probes))
