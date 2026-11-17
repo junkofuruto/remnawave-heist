@@ -26,8 +26,7 @@ DEFAULT_GEOIP_IPV4_URL = "https://raw.githubusercontent.com/sapics/ip-location-d
 DEFAULT_GEOIP_IPV6_URL = "https://raw.githubusercontent.com/sapics/ip-location-db/main/server-country/server-country-ipv6.csv"
 
 EUROPE_COUNTRY_CODES = frozenset(
-    "AL AD AT BY BE BA BG HR CY CZ DK EE FI FR DE GR HU IS IE IT XK LV LI LT LU "
-    "MT MD MC ME NL MK NO PL PT RO SM RS SK SI ES SE CH TR UA GB VA".split()
+    "IS EE FI NO SE DK DE NL CH IE LU AT BE".split()
 )
 
 

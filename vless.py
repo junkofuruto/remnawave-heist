@@ -1,43 +1,95 @@
 import base64
+import json
+import urllib.request
 import urllib.error
 import urllib.parse
-import urllib.request
-
 
 from downloads import download_opener
 
 
+def decode_base64(text):
+    text = text.strip()
+    text += "=" * (-len(text) % 4)
+    return base64.urlsafe_b64decode(text).decode("utf-8", "ignore")
+
 def fetch_subscription(url, opener=None):
-    req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+    req = urllib.request.Request(
+        url, headers={"User-Agent": "Mozilla/5.0"}
+    )
+
     try:
         with (opener or download_opener()).open(req, timeout=30) as r:
-            text = r.read().decode("utf-8", "ignore")
+            text = r.read().decode("utf-8", "ignore").strip()
     except urllib.error.HTTPError as error:
         error.close()
         raise
-    if "vless://" not in text:
+
+    # Decode Base64 subscription if necessary.
+    if not any(
+        p in text for p in (
+            "vless://", "vmess://", "trojan://",
+            "ss://", "socks://", "http://"
+        )
+    ):
         try:
-            text = base64.b64decode(text.strip() + "==").decode("utf-8", "ignore")
+            decoded = decode_base64(text)
+            if "://" in decoded:
+                text = decoded
         except Exception:
             pass
-    links, seen = [], set()
+
+    links = []
+    seen = set()
+
+    supported = (
+        "vless://",
+        "vmess://",
+        "trojan://",
+        "ss://",
+    )
+
     for line in text.splitlines():
         line = line.strip()
-        if line.startswith("vless://") and line not in seen:
-            seen.add(line)
-            links.append(line)
+
+        # Support multiple links separated by whitespace.
+        for item in line.split():
+            if item.startswith(supported) and item not in seen:
+                seen.add(item)
+                links.append(item)
+
     return links
 
 
 def link_to_outbound(link, tag):
+    scheme = urllib.parse.urlsplit(link).scheme.lower()
+
+    if scheme == "vless":
+        return vless_to_outbound(link, tag)
+
+    if scheme == "vmess":
+        return vmess_to_outbound(link, tag)
+
+    if scheme == "trojan":
+        return trojan_to_outbound(link, tag)
+
+    if scheme == "ss":
+        return shadowsocks_to_outbound(link, tag)
+
+    raise ValueError(f"Unsupported protocol: {scheme}")
+
+
+def vless_to_outbound(link, tag):
     u = urllib.parse.urlsplit(link)
     q = dict(urllib.parse.parse_qsl(u.query))
+
     net = q.get("type", "tcp")
     if net == "raw":
         net = "tcp"
+
     stream = {"network": net}
 
     sec = q.get("security", "none")
+
     if sec == "reality":
         stream["security"] = "reality"
         stream["realitySettings"] = {
@@ -47,25 +99,183 @@ def link_to_outbound(link, tag):
             "shortId": q.get("sid", ""),
             "spiderX": q.get("spx", "/"),
         }
+
     elif sec == "tls":
         stream["security"] = "tls"
         tls = {"serverName": q.get("sni", u.hostname)}
+
         if q.get("alpn"):
             tls["alpn"] = q["alpn"].split(",")
+
         stream["tlsSettings"] = tls
 
     if net == "ws":
-        stream["wsSettings"] = {"path": q.get("path", "/"), "headers": {"Host": q.get("host", "")}}
-    elif net == "grpc":
-        stream["grpcSettings"] = {"serviceName": q.get("serviceName", "")}
+        stream["wsSettings"] = {
+            "path": q.get("path", "/"),
+            "headers": {"Host": q.get("host", "")},
+        }
 
-    user = {"id": u.username, "encryption": "none"}
+    elif net == "grpc":
+        stream["grpcSettings"] = {
+            "serviceName": q.get("serviceName", ""),
+        }
+
+    user = {
+        "id": urllib.parse.unquote(u.username or ""),
+        "encryption": "none",
+    }
+
     if q.get("flow"):
         user["flow"] = q["flow"]
 
     return {
         "tag": tag,
         "protocol": "vless",
-        "settings": {"vnext": [{"address": u.hostname, "port": u.port or 443, "users": [user]}]},
+        "settings": {
+            "vnext": [{
+                "address": u.hostname,
+                "port": u.port or 443,
+                "users": [user],
+            }]
+        },
         "streamSettings": stream,
     }
+
+
+def vmess_to_outbound(link, tag):
+    raw = link[len("vmess://"):].split("#", 1)[0]
+    data = json.loads(decode_base64(raw))
+
+    net = data.get("net", "tcp")
+    if net == "raw":
+        net = "tcp"
+
+    stream = {"network": net}
+
+    if data.get("tls") == "tls":
+        stream["security"] = "tls"
+        stream["tlsSettings"] = {
+            "serverName": data.get("sni") or data.get("host", ""),
+            "allowInsecure": data.get("allowInsecure") == "1",
+        }
+
+        if data.get("alpn"):
+            stream["tlsSettings"]["alpn"] = data["alpn"].split(",")
+
+    if net == "ws":
+        stream["wsSettings"] = {
+            "path": data.get("path", "/"),
+            "headers": {"Host": data.get("host", "")},
+        }
+
+    elif net == "grpc":
+        stream["grpcSettings"] = {
+            "serviceName": data.get("path", ""),
+        }
+
+    return {
+        "tag": tag,
+        "protocol": "vmess",
+        "settings": {
+            "vnext": [{
+                "address": data["add"],
+                "port": int(data["port"]),
+                "users": [{
+                    "id": data["id"],
+                    "alterId": int(data.get("aid", 0)),
+                    "security": data.get("scy", "auto"),
+                }],
+            }]
+        },
+        "streamSettings": stream,
+    }
+
+
+def trojan_to_outbound(link, tag):
+    u = urllib.parse.urlsplit(link)
+    q = dict(urllib.parse.parse_qsl(u.query))
+
+    net = q.get("type", "tcp")
+    if net == "raw":
+        net = "tcp"
+
+    stream = {
+        "network": net,
+        "security": "tls",
+        "tlsSettings": {
+            "serverName": q.get("sni", u.hostname),
+        },
+    }
+
+    if q.get("alpn"):
+        stream["tlsSettings"]["alpn"] = q["alpn"].split(",")
+
+    if net == "ws":
+        stream["wsSettings"] = {
+            "path": q.get("path", "/"),
+            "headers": {"Host": q.get("host", "")},
+        }
+
+    elif net == "grpc":
+        stream["grpcSettings"] = {
+            "serviceName": q.get("serviceName", ""),
+        }
+
+    return {
+        "tag": tag,
+        "protocol": "trojan",
+        "settings": {
+            "servers": [{
+                "address": u.hostname,
+                "port": u.port or 443,
+                "password": urllib.parse.unquote(u.username or ""),
+            }]
+        },
+        "streamSettings": stream,
+    }
+
+
+def shadowsocks_to_outbound(link, tag):
+    u = urllib.parse.urlsplit(link)
+
+    userinfo = u.username or ""
+    host = u.hostname
+    port = u.port
+
+    if not host:
+        raw = link[len("ss://"):].split("#", 1)[0]
+        raw = raw.split("?", 1)[0]
+
+        decoded = decode_base64(urllib.parse.unquote(raw))
+        auth, hostport = decoded.rsplit("@", 1)
+
+        method, password = auth.split(":", 1)
+        parsed = urllib.parse.urlsplit("//" + hostport)
+
+        host = parsed.hostname
+        port = parsed.port
+
+    else:
+        if u.password is not None:
+            auth = userinfo + ":" + u.password
+        else:
+            auth = decode_base64(userinfo)
+
+        method, password = auth.split(":", 1)
+
+    if not host or not port:
+        raise ValueError("Invalid Shadowsocks server address")
+
+    return {
+        "tag": tag,
+        "protocol": "shadowsocks",
+        "settings": {
+            "servers": [{
+                "address": host,
+                "port": port,
+                "method": method,
+                "password": urllib.parse.unquote(password),
+            }]
+        },
+    }
+
