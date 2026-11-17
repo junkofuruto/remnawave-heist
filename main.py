@@ -339,8 +339,6 @@ def run_routines():
         unknown_active = panel_hashes - set(saved)
         if saved and unknown_active:
             raise StateError("panel contains managed outbounds missing from persistent state; manual reconciliation required")
-        # The panel is authoritative for which previously selected candidates
-        # are currently in use; persisted timestamps are not proof of activity.
         for digest, item in saved.items():
             item["active"] = digest in panel_hashes
 
@@ -350,50 +348,7 @@ def run_routines():
             logger.info("Loading GeoIP databases")
             geoip = GeoIP(config.geoip_ipv4_url, config.geoip_ipv6_url, config.geoip_cache_dir, opener)
 
-        # Run health maintenance before contacting subscriptions.
-        if saved:
-            logger.info("Routine 1: rechecking %d saved outbounds", len(saved))
-            known = [(item["outbound"], item["sources"]) for item in saved.values()]
-            passing = probe_candidates(known, geoip)
-            healthy_hashes = {outbound_hash(item[0]) for item in passing}
-            for digest, item in saved.items():
-                if digest not in healthy_hashes:
-                    item["latency_ms"] = None
-                    item["checked_at"] = datetime.now(timezone.utc).isoformat()
-            update_pool(state, passing)
-            save_checked_state(state)
-        else:
-            logger.info("Routine 1: no saved outbounds to recheck")
-
-        if saved and rank_saved(state):
-            first_selection, first_outbounds = publish_saved(state, api, profile, secrets.token_hex(4))
-            first_hashes = {outbound_hash(item["outbound"]) for item in first_selection}
-            for digest, item in saved.items():
-                item["active"] = digest in first_hashes
-            if not DRY_RUN:
-                save_checked_state(state)
-                profile = copy.deepcopy(profile)
-                profile_config = profile.get("config", profile)
-                if isinstance(profile_config, str):
-                    profile_config = json.loads(profile_config)
-                    profile["config"] = profile_config
-                profile_config["outbounds"] = first_outbounds
-            else:
-                profile = copy.deepcopy(profile)
-                profile_config = profile.get("config", profile)
-                if isinstance(profile_config, str):
-                    profile_config = json.loads(profile_config)
-                    profile["config"] = profile_config
-                profile_config["outbounds"] = [item for item in profile_config.get("outbounds", [])
-                                               if not str(item.get("tag", "")).startswith(TAG_PREFIX)] + [
-                                                   item["outbound"] for item in first_selection]
-            panel_hashes = {outbound_hash(item) for item in profile_config["outbounds"]
-                            if str(item.get("tag", "")).startswith(TAG_PREFIX)}
-        elif saved:
-            logger.warning("No saved outbounds passed; checking subscriptions for replacements")
-
-        # Routine 2: only a complete successful refresh can remove entries.
-        logger.info("Routine 2: checking subscriptions for updates")
+        logger.info("Checking subscriptions for updates")
         discovered, incomplete_sources = refresh_subscriptions(opener)
         retained_sources = {}
         for digest, item in saved.items():
