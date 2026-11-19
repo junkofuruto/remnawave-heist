@@ -81,16 +81,17 @@ def refresh_subscriptions(opener):
     """Fetch every source before accepting removals; deduplicate by config hash."""
     discovered = {}
     incomplete_sources = set()
+    total = len(config.urls)
     for index, url in enumerate(config.urls, 1):
-        logger.info("Reading subscription %d/%d", index, len(config.urls))
         try:
             links = fetch_subscription(url, opener)
         except (OSError, ValueError):
-            logger.error("Failed to read subscription %d; keeping saved state", index)
-            raise SystemExit(1) from None
+            logger.info("Reading subscription %d/%d [skipped %d invalid]", index, total, 0)
+            incomplete_sources.add(subscription_hash(url))
+            continue
         if not links:
-            logger.error("Subscription %d has no VLESS links; keeping saved state", index)
-            raise SystemExit(1)
+            logger.info("Reading subscription %d/%d [skipped %d invalid]", index, total, 0)
+            continue
         source = subscription_hash(url)
         valid_count = 0
         invalid_count = 0
@@ -113,13 +114,9 @@ def refresh_subscriptions(opener):
                     discovered[digest][1].append(source)
             else:
                 discovered[digest] = (outbound, [source])
-        if not valid_count:
-            logger.error("Subscription %d has no valid VLESS configurations; keeping saved state", index)
-            raise SystemExit(1)
         if invalid_count:
             incomplete_sources.add(source)
-            logger.warning("Skipped %d invalid VLESS configuration(s) in subscription %d; preserving previous entries until a clean refresh",
-                           invalid_count, index)
+        logger.info("Reading subscription %d/%d [skipped %d invalid]", index, total, invalid_count)
     return discovered, incomplete_sources
 
 
