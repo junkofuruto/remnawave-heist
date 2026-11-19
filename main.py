@@ -35,13 +35,23 @@ def probe_with_retries(outbound):
     return None
 
 
+def get_outbound_address(outbound):
+    """Extract the address from any outbound type (VLESS or Shadowsocks)."""
+    settings = outbound.get("settings", {})
+    if "vnext" in settings:
+        return settings["vnext"][0]["address"]
+    if "servers" in settings:
+        return settings["servers"][0]["address"]
+    raise ValueError("outbound has no address")
+
+
 def probe_candidates(candidates, geoip):
     """Return passing candidates, checking a bounded number concurrently."""
     pending, results = {}, []
     with ThreadPoolExecutor(max_workers=config.probe_concurrency) as pool:
         try:
             for order, (outbound, sources) in enumerate(candidates):
-                address = outbound["settings"]["vnext"][0]["address"]
+                address = get_outbound_address(outbound)
                 if geoip is not None and not geoip.is_european(address):
                     continue
                 future = pool.submit(probe_with_retries, outbound)
@@ -89,9 +99,9 @@ def refresh_subscriptions(opener):
                 name = urllib.parse.unquote(urllib.parse.urlsplit(link).fragment) or "node"
                 slug = re.sub(r"[^A-Za-z0-9]+", "-", name).strip("-")[:20] or "node"
                 outbound = link_to_outbound(link, "")
-                vnext = outbound["settings"]["vnext"][0]
-                if not vnext["address"] or not vnext["users"][0]["id"]:
-                    raise ValueError("missing server or user")
+                address = get_outbound_address(outbound)
+                if not address:
+                    raise ValueError("missing server address")
                 digest = outbound_hash(outbound)
                 outbound["tag"] = f"{TAG_PREFIX}{digest[:16]}-{slug}"
             except (ValueError, TypeError, KeyError, IndexError, UnicodeError):

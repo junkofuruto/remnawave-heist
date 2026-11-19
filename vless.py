@@ -60,6 +60,78 @@ def fetch_subscription(url, opener=None):
     return links
 
 
+def ss_to_outbound(link, tag):
+    """Parse a Shadowsocks URI into an outbound configuration.
+
+    Supports both:
+      ss://method:password@host:port#tag        (plaintext)
+      ss://base64(method:password@host:port)#tag  (base64-encoded)
+    """
+    if link.startswith("ss://"):
+        link = link[5:]
+
+    if "#" in link:
+        link, fragment = link.rsplit("#", 1)
+    else:
+        fragment = ""
+
+    def parse_userinfo_hostport(text):
+        """Parse method:password@host:port from decoded text."""
+        if "@" not in text:
+            raise ValueError("missing @ separator in SS URI")
+        userinfo, host_port = text.rsplit("@", 1)
+        if ":" in userinfo:
+            method, password = userinfo.split(":", 1)
+        else:
+            method = userinfo
+            password = ""
+        if ":" in host_port:
+            host, port_str = host_port.rsplit(":", 1)
+            try:
+                port = int(port_str)
+            except ValueError:
+                raise ValueError(f"invalid port: {port_str}")
+        else:
+            host = host_port
+            port = 443
+        if not host:
+            raise ValueError("missing server address")
+        if not password:
+            raise ValueError("missing password")
+        return host, port, method, password
+
+    # Try base64 decode first (standard ss:// format)
+    decoded = None
+    try:
+        decoded = base64.b64decode(link + "==").decode("utf-8", "ignore")
+        # Verify the decoded text looks like method:password@host:port
+        if "@" in decoded and ":" in decoded.split("@", 1)[0]:
+            host, port, method, password = parse_userinfo_hostport(decoded)
+        else:
+            decoded = None
+    except Exception:
+        decoded = None
+
+    if decoded is None:
+        # Try parsing directly as method:password@host:port
+        host, port, method, password = parse_userinfo_hostport(link)
+
+    return {
+        "tag": tag,
+        "protocol": "shadowsocks",
+        "settings": {
+            "servers": [{
+                "address": host,
+                "port": port,
+                "method": method,
+                "password": password,
+                "level": 0,
+                "email": ""
+            }]
+        }
+    }
+
+
 def link_to_outbound(link, tag):
     scheme = urllib.parse.urlsplit(link).scheme.lower()
 
@@ -68,6 +140,9 @@ def link_to_outbound(link, tag):
 
     if scheme == "vmess":
         return vmess_to_outbound(link, tag)
+
+    if scheme == "ss":
+        return ss_to_outbound(link, tag)
 
     if scheme == "trojan":
         return trojan_to_outbound(link, tag)
