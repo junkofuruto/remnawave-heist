@@ -430,6 +430,9 @@ def main():
     except StateError as e:
         logger.error("%s; profile not changed", e)
         raise SystemExit(1) from None
+    except KeyboardInterrupt:
+        logger.warning("Interrupted by user; exiting gracefully")
+        raise SystemExit(130) from None
 
 
 if __name__ == "__main__":
@@ -437,4 +440,8 @@ if __name__ == "__main__":
         configure_logging(config.log_file)
     except OSError as e:
         sys.exit(f"cannot initialize log file: {e.strerror or 'filesystem error'}")
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        logger.warning("Interrupted by user; exiting gracefully")
+        sys.exit(130)
