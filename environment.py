@@ -29,7 +29,7 @@ class Config:
     proxy: Optional[str] = field(default=None, repr=False)
     probe_urls: List[str] = field(default_factory=lambda: ["200-299 https://telegram.org/", "200-299 https://www.instagram.com/"], repr=False)
     probe_timeout: float = 10
-    probe_concurrency: int = 4
+    probe_concurrency: int = 8
     probe_attempts: int = 3
     xray_concurrency: int = 4
     state_file: Path = BASE_DIR / "state.json"

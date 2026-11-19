@@ -12,7 +12,7 @@
     "200-299|400-499 https://rr2---sn-ovgq0oxu-j2ie.googlevideo.com/videoplayback"
   ],
   "probe_timeout": 10,
-  "probe_concurrency": 4,
+  "probe_concurrency": 8,
   "probe_attempts": 3,
   "xray_concurrency": 4,
   "state_file": "state.json",

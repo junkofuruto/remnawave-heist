@@ -13,6 +13,7 @@ import threading
 import time
 import urllib.parse
 
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from contextlib import contextmanager
 from dataclasses import dataclass
 from http.client import HTTPException
@@ -270,26 +271,13 @@ def _xray_session(outbound, binary):
 
 
 
-def check_outbound(outbound, urls, timeout=10, binary="xray"):
-    """Check connectivity and retain latency only for passing candidates.
-
-    Each probe URL gets its own isolated Xray process so that a failure on
-    one URL does not affect the others.
-    """
-    if not urls:
-        raise XrayProbeError("at least one outbound probe URL is required")
+def _probe_one(outbound, binary, timeout, index, url, ranges):
+    """Run a single probe URL through its own Xray process. Returns (index, success, latency_ms, label, failure)."""
+    label = _probe_label(url)
     try:
-        probes = [parse_probe_entry(entry) for entry in urls]
-    except ValueError as e:
-        raise XrayProbeError("invalid outbound probe configuration") from e
-    description = _outbound_label(outbound)
-    passed_probes, failed_probes, latencies = [], [], []
-    for index, (url, ranges) in enumerate(probes, 1):
-        label = _probe_label(url)
         with _xray_session(outbound, binary) as session:
             if session is None:
-                failed_probes.append(f"{index} ({label}) Xray failed to start")
-                continue
+                return index, False, 0.0, label, "Xray failed to start"
             process, proxy, context = session
             try:
                 status, latency, _, _ = _probe_url(proxy, url, timeout, context)
@@ -301,19 +289,62 @@ def check_outbound(outbound, urls, timeout=10, binary="xray"):
             except (OSError, ValueError, HTTPException):
                 failure = "failed"
             if process.poll() is not None:
-                logger.warning("Outbound %s: Xray exited during probe %d (%s)", description, index, label)
-                failed_probes.append(f"{index} ({label}) Xray exited")
-                continue
+                failure = "Xray exited"
             if failure:
-                failed_probes.append(f"{index} ({label}) {failure}")
-            else:
-                passed_probes.append(f"{index} ({label}, HTTP {status})")
-                latencies.append(latency)
-    if failed_probes:
-        logger.warning("Outbound %s: failed probes: %d; passed: %d", description, len(failed_probes), len(passed_probes))
+                return index, False, 0.0, label, failure
+            return index, True, latency * 1000.0, label, None
+    except XrayProbeError as e:
+        return index, False, 0.0, label, str(e)
+
+
+def check_outbound(outbound, urls, timeout=10, binary="xray"):
+    """Check connectivity and retain latency only for passing candidates.
+
+    Each probe URL gets its own isolated Xray process. All probes run
+    concurrently; as soon as one fails the rest are cancelled. An outbound
+    passes only when every probe succeeds (100%).
+    """
+    if not urls:
+        raise XrayProbeError("at least one outbound probe URL is required")
+    try:
+        probes = [parse_probe_entry(entry) for entry in urls]
+    except ValueError as e:
+        raise XrayProbeError("invalid outbound probe configuration") from e
+    description = _outbound_label(outbound)
+    passed_probes = []
+    latencies = []
+    failed_count = 0
+    first_failure = None
+    max_workers = min(len(probes), 8)
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {}
+        for index, (url, ranges) in enumerate(probes, 1):
+            future = pool.submit(_probe_one, outbound, binary, timeout, index, url, ranges)
+            futures[future] = index
+        pending = set(futures)
+        while pending:
+            done, pending = wait(pending, return_when=FIRST_COMPLETED)
+            for future in done:
+                index, success, latency_ms, label, failure = future.result()
+                if success:
+                    passed_probes.append(f"{index} ({label}, HTTP OK)")
+                    latencies.append(latency_ms)
+                else:
+                    failed_count += 1
+                    if first_failure is None:
+                        first_failure = f"{index} ({label}) {failure}"
+                    # Cancel all remaining probes immediately on first failure
+                    for f in pending:
+                        f.cancel()
+                    pending.clear()
+                    break
+    if failed_count:
+        logger.warning("Outbound %s: failed probes: %d; passed: %d (first failure: %s)",
+                       description, failed_count, len(passed_probes), first_failure)
         return None
-    latency_ms = sum(latencies) * 1000 / len(latencies)
-    logger.info("Outbound %s: latency %.1f ms; passed probes: %s", description, latency_ms, ", ".join(passed_probes))
+    latency_ms = sum(latencies) / len(latencies)
+    logger.info("Outbound %s: latency %.1f ms; passed probes: %s",
+                description, latency_ms, ", ".join(passed_probes))
     return LatencyResult(latency_ms)
 
 
