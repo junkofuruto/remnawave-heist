@@ -129,7 +129,7 @@ def ss_to_outbound(link, tag):
                 "email": ""
             }]
         },
-        "streamSettings": {"network": "tcp"},
+        "streamSettings": {"network": "tcp", "security": "none"},
     }
 
 
@@ -350,6 +350,6 @@ def shadowsocks_to_outbound(link, tag):
                 "password": urllib.parse.unquote(password),
             }]
         },
-        "streamSettings": {"network": "tcp"},
+        "streamSettings": {"network": "tcp", "security": "none"},
     }
 

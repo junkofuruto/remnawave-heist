@@ -241,9 +241,15 @@ def _xray_session(outbound, binary):
         last_poll = 0.0
         while time.monotonic() < deadline:
             if process.poll() is not None:
-                # Xray exited — capture stderr to diagnose why
-                _, stderr = process.communicate()
-                error_text = stderr.decode("utf-8", "ignore").strip()[:200] if stderr else "unknown error"
+                # Xray exited — capture output to diagnose why
+                try:
+                    _, stderr = process.communicate(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    _, stderr = process.communicate()
+                rc = process.returncode
+                stderr_text = stderr.decode("utf-8", "replace").strip() if stderr else ""
+                error_text = stderr_text[:200] if stderr_text else f"exit code {rc}"
                 logger.warning("Outbound %s: Xray exited during startup: %s", description, error_text)
                 try:
                     os.unlink(config_path)
@@ -258,8 +264,14 @@ def _xray_session(outbound, binary):
                         break
                 except XrayProbeError:
                     if process.poll() is not None:
-                        _, stderr = process.communicate()
-                        error_text = stderr.decode("utf-8", "ignore").strip()[:200] if stderr else "unknown error"
+                        try:
+                            _, stderr = process.communicate(timeout=3)
+                        except subprocess.TimeoutExpired:
+                            process.kill()
+                            _, stderr = process.communicate()
+                        rc = process.returncode
+                        stderr_text = stderr.decode("utf-8", "replace").strip() if stderr else ""
+                        error_text = stderr_text[:200] if stderr_text else f"exit code {rc}"
                         logger.warning("Outbound %s: Xray exited before the probe inbound was ready: %s",
                                        description, error_text)
                         try:
@@ -279,8 +291,14 @@ def _xray_session(outbound, binary):
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
-            _, stderr = process.communicate()
-            error_text = stderr.decode("utf-8", "ignore").strip()[:200] if stderr else "unknown error"
+            try:
+                _, stderr = process.communicate(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                _, stderr = process.communicate()
+            rc = process.returncode
+            stderr_text = stderr.decode("utf-8", "replace").strip() if stderr else ""
+            error_text = stderr_text[:200] if stderr_text else f"exit code {rc}"
             logger.warning("Outbound %s: Xray startup timeout: %s", description, error_text)
             try:
                 os.unlink(config_path)
@@ -289,8 +307,14 @@ def _xray_session(outbound, binary):
             yield None
             return
         if process.poll() is not None:
-            _, stderr = process.communicate()
-            error_text = stderr.decode("utf-8", "ignore").strip()[:200] if stderr else "unknown error"
+            try:
+                _, stderr = process.communicate(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                _, stderr = process.communicate()
+            rc = process.returncode
+            stderr_text = stderr.decode("utf-8", "replace").strip() if stderr else ""
+            error_text = stderr_text[:200] if stderr_text else f"exit code {rc}"
             logger.warning("Outbound %s: Xray exited before probing: %s", description, error_text)
             try:
                 os.unlink(config_path)
