@@ -309,14 +309,12 @@ def check_outbound(outbound, urls, timeout=10, binary="xray"):
             else:
                 passed_probes.append(f"{index} ({label}, HTTP {status})")
                 latencies.append(latency)
-    if latencies:
-        latency_ms = sum(latencies) * 1000 / len(latencies)
-        if failed_probes:
-            logger.warning("Outbound %s: failed probes: %d; passed: %d", description, len(failed_probes), len(passed_probes))
-        logger.info("Outbound %s: latency %.1f ms; passed probes: %s", description, latency_ms, ", ".join(passed_probes))
-        return LatencyResult(latency_ms)
-    logger.warning("Outbound %s: all probes failed (%d)", description, len(failed_probes))
-    return None
+    if failed_probes:
+        logger.warning("Outbound %s: failed probes: %d; passed: %d", description, len(failed_probes), len(passed_probes))
+        return None
+    latency_ms = sum(latencies) * 1000 / len(latencies)
+    logger.info("Outbound %s: latency %.1f ms; passed probes: %s", description, latency_ms, ", ".join(passed_probes))
+    return LatencyResult(latency_ms)
 
 
 def check_speed(outbound, speed_url=DEFAULT_SPEED_URL, speed_bytes=DEFAULT_SPEED_BYTES, timeout=10, binary="xray"):
