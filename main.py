@@ -12,7 +12,7 @@ from logging_setup import configure_logging
 from remnawave_api import ProfileConflictError, RemnawaveAPI
 from state import StateError, load_state, outbound_hash, save_state, state_lock, subscription_hash
 from vless import fetch_subscription, link_to_outbound
-from xray_probe import XrayProbeError, check_outbound, check_speed, require_xray
+from xray_probe import XrayProbeError, check_outbound, check_speed, configure_xray_concurrency, require_xray
 
 logger = logging.getLogger("remnawave.main")
 
@@ -316,6 +316,7 @@ def run_routines():
     logger.info("Starting %s", "dry run" if DRY_RUN else "profile maintenance")
     try:
         require_xray(config.xray_binary)
+        configure_xray_concurrency(config.xray_concurrency)
         state = load_state(config.state_file, config.url, config.profile, restrict_permissions=not DRY_RUN)
         api = RemnawaveAPI(config.url, config.token, config.ssl_ctx)
         profile = api.get_profile(config.profile)

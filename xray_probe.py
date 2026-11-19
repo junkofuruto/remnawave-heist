@@ -9,6 +9,7 @@ import socket
 import ssl
 import subprocess
 import tempfile
+import threading
 import time
 import urllib.parse
 
@@ -20,6 +21,15 @@ from downloads import _socks5_connect
 
 logger = logging.getLogger("remnawave.probe")
 STARTUP_TIMEOUT = 5
+
+# Limit concurrent Xray probe processes to avoid OOM kills.
+_xray_semaphore: threading.Semaphore | None = None
+
+
+def configure_xray_concurrency(max_concurrent: int):
+    """Set the maximum number of concurrent Xray probe processes."""
+    global _xray_semaphore
+    _xray_semaphore = threading.BoundedSemaphore(max_concurrent)
 
 
 DEFAULT_SPEED_URL = "https://speed.cloudflare.com/__down?bytes=1000000"
@@ -195,9 +205,16 @@ def _stop(process):
 @contextmanager
 def _xray_session(outbound, binary):
     description = _outbound_label(outbound)
+    if _xray_semaphore is not None:
+        _xray_semaphore.acquire()
+        acquired = True
+    else:
+        acquired = False
     try:
         port = _available_port()
     except OSError as e:
+        if acquired:
+            _xray_semaphore.release()
         raise XrayProbeError("cannot allocate a local Xray probe port") from e
     username, password = secrets.token_hex(16), secrets.token_hex(16)
     xray_config = {
@@ -246,6 +263,8 @@ def _xray_session(outbound, binary):
             raise XrayProbeError("cannot initialize TLS for outbound probes") from e
         yield process, f"socks5h://{username}:{password}@127.0.0.1:{port}", context
     finally:
+        if _xray_semaphore is not None:
+            _xray_semaphore.release()
         _stop(process)
 
 

@@ -31,6 +31,7 @@ class Config:
     probe_timeout: float = 10
     probe_concurrency: int = 4
     probe_attempts: int = 3
+    xray_concurrency: int = 4
     state_file: Path = BASE_DIR / "state.json"
     max_outbounds: int = 20
     speed_test_url: str = field(default=DEFAULT_SPEED_URL, repr=False)
@@ -132,6 +133,9 @@ def load_config(path: Path) -> Config:
     probe_attempts = data.get("probe_attempts", 3)
     if isinstance(probe_attempts, bool) or not isinstance(probe_attempts, int) or not 1 <= probe_attempts <= 10:
         sys.exit("config value probe_attempts must be an integer between 1 and 10")
+    xray_concurrency = data.get("xray_concurrency", 4)
+    if isinstance(xray_concurrency, bool) or not isinstance(xray_concurrency, int) or not 1 <= xray_concurrency <= 32:
+        sys.exit("config value xray_concurrency must be an integer between 1 and 32")
     max_outbounds = data.get("max_outbounds", 20)
     if isinstance(max_outbounds, bool) or not isinstance(max_outbounds, int) or not 1 <= max_outbounds <= 1000:
         sys.exit("config value max_outbounds must be an integer between 1 and 1000")
@@ -167,6 +171,7 @@ def load_config(path: Path) -> Config:
         probe_timeout=probe_timeout,
         probe_concurrency=probe_concurrency,
         probe_attempts=probe_attempts,
+        xray_concurrency=xray_concurrency,
         state_file=Path(data.get("state_file", BASE_DIR / "state.json")),
         max_outbounds=max_outbounds,
         speed_test_url=speed_test_url,
