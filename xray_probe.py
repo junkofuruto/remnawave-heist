@@ -226,36 +226,76 @@ def _xray_session(outbound, binary):
         "outbounds": [outbound],
     }
     try:
-        with tempfile.TemporaryFile(mode="w+b") as config_file:
+        with tempfile.NamedTemporaryFile(mode="w+b", suffix=".json", delete=False) as config_file:
             config_file.write(json.dumps(xray_config).encode("utf-8"))
             config_file.seek(0)
-            process = subprocess.Popen([binary, "run", "-config", "stdin:"], stdin=config_file,
-                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            config_path = config_file.name
+        process = subprocess.Popen(
+            [binary, "run", "-config", config_path],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
     except OSError as e:
         raise XrayProbeError("cannot prepare or start Xray executable") from e
     try:
         deadline = time.monotonic() + STARTUP_TIMEOUT
+        last_poll = 0.0
         while time.monotonic() < deadline:
             if process.poll() is not None:
-                logger.warning("Outbound %s: Xray exited before the probe inbound was ready", description)
+                # Xray exited — capture stderr to diagnose why
+                _, stderr = process.communicate()
+                error_text = stderr.decode("utf-8", "ignore").strip()[:200] if stderr else "unknown error"
+                logger.warning("Outbound %s: Xray exited during startup: %s", description, error_text)
+                try:
+                    os.unlink(config_path)
+                except OSError:
+                    pass
                 yield None
                 return
-            try:
-                if _xray_listens_on(process, port):
-                    break
-            except XrayProbeError:
-                if process.poll() is not None:
-                    logger.warning("Outbound %s: Xray exited before the probe inbound was ready", description)
-                    yield None
-                    return
-                raise
-            time.sleep(0.05)
+            now = time.monotonic()
+            if now - last_poll >= 0.1:
+                try:
+                    if _xray_listens_on(process, port):
+                        break
+                except XrayProbeError:
+                    if process.poll() is not None:
+                        _, stderr = process.communicate()
+                        error_text = stderr.decode("utf-8", "ignore").strip()[:200] if stderr else "unknown error"
+                        logger.warning("Outbound %s: Xray exited before the probe inbound was ready: %s",
+                                       description, error_text)
+                        try:
+                            os.unlink(config_path)
+                        except OSError:
+                            pass
+                        yield None
+                        return
+                    raise
+                last_poll = now
+            time.sleep(0.01)
         else:
             logger.warning("Outbound %s: Xray probe inbound did not start in time", description)
+            process.terminate()
+            try:
+                process.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+            _, stderr = process.communicate()
+            error_text = stderr.decode("utf-8", "ignore").strip()[:200] if stderr else "unknown error"
+            logger.warning("Outbound %s: Xray startup timeout: %s", description, error_text)
+            try:
+                os.unlink(config_path)
+            except OSError:
+                pass
             yield None
             return
         if process.poll() is not None:
-            logger.warning("Outbound %s: Xray exited before probing", description)
+            _, stderr = process.communicate()
+            error_text = stderr.decode("utf-8", "ignore").strip()[:200] if stderr else "unknown error"
+            logger.warning("Outbound %s: Xray exited before probing: %s", description, error_text)
+            try:
+                os.unlink(config_path)
+            except OSError:
+                pass
             yield None
             return
         try:
@@ -266,6 +306,10 @@ def _xray_session(outbound, binary):
     finally:
         if _xray_semaphore is not None:
             _xray_semaphore.release()
+        try:
+            os.unlink(config_path)
+        except OSError:
+            pass
         _stop(process)
 
 
