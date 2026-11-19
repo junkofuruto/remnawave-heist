@@ -351,9 +351,10 @@ def run_routines():
 
         opener = download_opener(config.proxy)
         geoip = None
-        if config.location == "europe":
+        if config.geoip_country_codes:
             logger.info("Loading GeoIP databases")
-            geoip = GeoIP(config.geoip_ipv4_url, config.geoip_ipv6_url, config.geoip_cache_dir, opener)
+            geoip = GeoIP(config.geoip_ipv4_url, config.geoip_ipv6_url, config.geoip_cache_dir, opener,
+                          country_codes=config.geoip_country_codes)
 
         logger.info("Checking subscriptions for updates")
         discovered, incomplete_sources = refresh_subscriptions(opener)

@@ -25,9 +25,7 @@ MAX_GEOIP_BYTES = 128 * 1024 * 1024
 DEFAULT_GEOIP_IPV4_URL = "https://raw.githubusercontent.com/sapics/ip-location-db/main/server-country/server-country-ipv4.csv"
 DEFAULT_GEOIP_IPV6_URL = "https://raw.githubusercontent.com/sapics/ip-location-db/main/server-country/server-country-ipv6.csv"
 
-EUROPE_COUNTRY_CODES = frozenset(
-    "IS EE FI NO SE DK DE NL CH IE LU AT BE".split()
-)
+
 
 
 class GeoIPError(Exception):
@@ -184,14 +182,21 @@ def load_downloaded_database(url, version, cache_dir, opener=None):
 
 
 class GeoIP:
-    def __init__(self, ipv4_url, ipv6_url, cache_dir, opener=None):
+    def __init__(self, ipv4_url, ipv6_url, cache_dir, opener=None, country_codes=None):
         self.ipv4 = load_downloaded_database(ipv4_url, 4, cache_dir, opener)
         self.ipv6 = load_downloaded_database(ipv6_url, 6, cache_dir, opener)
+        self.country_codes = frozenset(country_codes) if country_codes else None
         self.cache = {}
 
     def is_european(self, hostname):
+        return self.matches_region(hostname)
+
+    def matches_region(self, hostname):
         if not hostname or "%" in hostname:
             return False
+        # If no country codes configured, allow all addresses
+        if self.country_codes is None:
+            return True
         if hostname in self.cache:
             return self.cache[hostname]
         try:
@@ -202,7 +207,7 @@ class GeoIP:
                 addresses = {ipaddress.ip_address(record[4][0]) for record in records}
             result = bool(addresses) and all(
                 address.is_global and (self.ipv4 if address.version == 4 else self.ipv6).country(address)
-                in EUROPE_COUNTRY_CODES for address in addresses
+                in self.country_codes for address in addresses
             )
         except (OSError, ValueError):
             result = False

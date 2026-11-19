@@ -22,7 +22,7 @@ class Config:
     urls: List[str] = field(repr=False)
     cert: Optional[Path] = None
     backup_dir: Path = BASE_DIR / "backups"
-    location: str = "europe"
+    geoip_country_codes: List[str] = field(default_factory=lambda: ["IS", "EE", "FI", "NO", "SE", "DK", "DE", "NL", "CH", "IE", "LU", "AT", "BE"])
     geoip_ipv4_url: str = DEFAULT_GEOIP_IPV4_URL
     geoip_ipv6_url: str = DEFAULT_GEOIP_IPV6_URL
     geoip_cache_dir: Path = BASE_DIR / ".geoip-cache"
@@ -102,9 +102,18 @@ def load_config(path: Path) -> Config:
         if not valid_proxy:
             sys.exit("config value proxy must be null or an HTTP/SOCKS5 proxy URL with host and port")
 
-    location = data.get("location", "europe")
-    if not isinstance(location, str) or location not in ("europe", "all"):
-        sys.exit("config value location must be 'europe' or 'all'")
+    raw_geoip_country_codes = data.get("geoip_country_codes")
+    if raw_geoip_country_codes is None:
+        geoip_country_codes = ["IS", "EE", "FI", "NO", "SE", "DK", "DE", "NL", "CH", "IE", "LU", "AT", "BE"]
+    elif isinstance(raw_geoip_country_codes, str):
+        geoip_country_codes = [code.strip().upper() for code in raw_geoip_country_codes.split() if code.strip()]
+    elif isinstance(raw_geoip_country_codes, list):
+        geoip_country_codes = [str(code).strip().upper() for code in raw_geoip_country_codes if str(code).strip()]
+    else:
+        sys.exit("config value geoip_country_codes must be a space-separated string or a list of 2-letter country codes")
+    for code in geoip_country_codes:
+        if len(code) != 2 or not code.isalpha():
+            sys.exit(f"config value geoip_country_codes contains invalid country code: {code!r}")
 
     probe_urls = data.get("probe_urls", ["200-299 https://telegram.org/", "200-299 https://www.instagram.com/"])
     if not isinstance(probe_urls, list) or not probe_urls:
@@ -149,7 +158,7 @@ def load_config(path: Path) -> Config:
         urls=urls,
         cert=Path(data["cert"]) if "cert" in data else None,
         backup_dir=Path(data.get("backup_dir", BASE_DIR / "backups")),
-        location=location,
+        geoip_country_codes=geoip_country_codes,
         geoip_ipv4_url=data.get("geoip_ipv4_url", DEFAULT_GEOIP_IPV4_URL),
         geoip_ipv6_url=data.get("geoip_ipv6_url", DEFAULT_GEOIP_IPV6_URL),
         geoip_cache_dir=Path(data.get("geoip_cache_dir", BASE_DIR / ".geoip-cache")),

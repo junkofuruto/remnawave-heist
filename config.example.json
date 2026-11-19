@@ -4,6 +4,7 @@
   "profile": "your-profile-uuid",
   "urls": ["https://example.com/subscription"],
   "location": "europe",
+  "geoip_country_codes": "IS EE FI NO SE DK DE NL CH IE LU AT BE",
   "proxy": null,
   "probe_urls": [
     "200-299 https://telegram.org/",
