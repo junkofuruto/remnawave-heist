@@ -162,6 +162,8 @@ def vless_to_outbound(link, tag):
     stream = {"network": net}
 
     sec = q.get("security", "none")
+    if sec == "none":
+        stream["security"] = "none"
 
     if sec == "reality":
         stream["security"] = "reality"
@@ -234,6 +236,8 @@ def vmess_to_outbound(link, tag):
 
         if data.get("alpn"):
             stream["tlsSettings"]["alpn"] = data["alpn"].split(",")
+    else:
+        stream["security"] = "none"
 
     if net == "ws":
         stream["wsSettings"] = {
