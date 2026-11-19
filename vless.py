@@ -147,9 +147,6 @@ def link_to_outbound(link, tag):
     if scheme == "trojan":
         return trojan_to_outbound(link, tag)
 
-    if scheme == "ss":
-        return shadowsocks_to_outbound(link, tag)
-
     raise ValueError(f"Unsupported protocol: {scheme}")
 
 
