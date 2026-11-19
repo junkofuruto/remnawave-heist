@@ -67,26 +67,26 @@ def load_state(path, panel_url, profile, *, restrict_permissions=True):
         try:
             outbound = item["outbound"]
             tag = outbound.get("tag")
-            protocol = outbound.get("protocol")
             settings = outbound.get("settings", {})
             if not isinstance(tag, str) or not tag.startswith("out-auto-"):
                 valid_destination = False
-            elif protocol == "vless":
-                destination = settings.get("vnext", [{}])[0]
-                valid_destination = (isinstance(destination.get("address"), str) and bool(destination["address"])
-                                     and isinstance(destination.get("port"), int) and not isinstance(destination["port"], bool)
-                                     and 1 <= destination["port"] <= 65535
-                                     and isinstance(destination.get("users", [{}])[0].get("id"), str)
-                                     and bool(destination["users"][0]["id"]))
-            elif protocol == "shadowsocks":
-                destination = settings.get("servers", [{}])[0]
-                valid_destination = (isinstance(destination.get("address"), str) and bool(destination["address"])
-                                     and isinstance(destination.get("port"), int) and not isinstance(destination["port"], bool)
-                                     and 1 <= destination["port"] <= 65535
-                                     and isinstance(destination.get("method"), str) and bool(destination.get("method"))
-                                     and isinstance(destination.get("password"), str) and bool(destination.get("password")))
             else:
-                valid_destination = False
+                # Protocol-agnostic destination checks: accept any protocol type
+                # as long as it has a valid address and port.
+                destinations = []
+                if "vnext" in settings:
+                    destinations.extend(settings.get("vnext", []))
+                if "servers" in settings:
+                    destinations.extend(settings.get("servers", []))
+                if not destinations:
+                    valid_destination = False
+                else:
+                    valid_destination = all(
+                        isinstance(d.get("address"), str) and bool(d["address"])
+                        and isinstance(d.get("port"), int) and not isinstance(d["port"], bool)
+                        and 1 <= d["port"] <= 65535
+                        for d in destinations
+                    )
         except (KeyError, IndexError, TypeError):
             valid_destination = False
         if not valid_destination:
